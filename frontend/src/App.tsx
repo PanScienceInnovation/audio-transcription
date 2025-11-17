@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2 } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = 'http://localhost:5001';
@@ -45,6 +45,7 @@ function App() {
     word: '',
   });
   const [hasChanges, setHasChanges] = useState(false);
+  const [savingToDatabase, setSavingToDatabase] = useState(false);
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -258,6 +259,52 @@ function App() {
     link.click();
   };
 
+  const saveToDatabase = async () => {
+    if (!transcriptionData) return;
+
+    setSavingToDatabase(true);
+
+    try {
+      // Extract audio filename from audio_path
+      const audioPath = transcriptionData.metadata?.audio_path || transcriptionData.audio_path || '';
+      const audioFilename = audioPath.split('/').pop() || '';
+
+      // Prepare transcription data
+      const transcriptionDataToSave = {
+        words: transcriptionData.words,
+        language: transcriptionData.language,
+        audio_duration: transcriptionData.audio_duration,
+        total_words: transcriptionData.total_words,
+        reference_text: transcriptionData.reference_text,
+        has_reference: transcriptionData.has_reference,
+        transcription_type: 'words',
+        metadata: transcriptionData.metadata
+      };
+
+      const saveData = {
+        audio_path: audioPath,
+        audio_filename: audioFilename,
+        transcription_data: transcriptionDataToSave
+      };
+
+      const response = await axios.post(
+        `${API_BASE_URL}/api/transcription/save-to-database`,
+        saveData
+      );
+
+      if (response.data.success) {
+        alert(`Successfully saved to database!\nMongoDB ID: ${response.data.mongodb_id}\nS3 URL: ${response.data.s3_metadata?.url || 'N/A'}`);
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error saving to database:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setSavingToDatabase(false);
+    }
+  };
+
   const matchesReference = (word: string): boolean | null => {
     if (!referenceText) return null;
 
@@ -411,6 +458,23 @@ function App() {
                       Save Changes
                     </button>
                   )}
+                  <button
+                    onClick={saveToDatabase}
+                    disabled={savingToDatabase}
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
+                  >
+                    {savingToDatabase ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <Database className="h-4 w-4 mr-2" />
+                        Save to Database
+                      </>
+                    )}
+                  </button>
                   <button
                     onClick={downloadTranscription}
                     className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"

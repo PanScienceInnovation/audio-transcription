@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import App from './App';
 import PhrasesApp from './PhrasesApp';
-import { Mic2, MessageSquare } from 'lucide-react';
+import SavedTranscriptions from './SavedTranscriptions';
+import { Mic2, MessageSquare, Database } from 'lucide-react';
 
 function MainApp() {
-  const [currentView, setCurrentView] = useState<'words' | 'phrases'>('words');
+  const [currentView, setCurrentView] = useState<'words' | 'phrases' | 'saved'>('words');
 
   return (
     <div>
@@ -29,10 +30,22 @@ function MainApp() {
           <MessageSquare className="h-5 w-5" />
           Phrase-Level
         </button>
+        <button
+          onClick={() => setCurrentView('saved')}
+          className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${currentView === 'saved'
+              ? 'bg-indigo-600 text-white shadow-lg'
+              : 'text-indigo-600 hover:bg-indigo-50'
+            }`}
+        >
+          <Database className="h-5 w-5" />
+          Saved
+        </button>
       </div>
       
       {/* Content */}
-      {currentView === 'words' ? <App /> : <PhrasesApp />}
+      {currentView === 'words' && <App />}
+      {currentView === 'phrases' && <PhrasesApp />}
+      {currentView === 'saved' && <SavedTranscriptions />}
     </div>
   );
 }

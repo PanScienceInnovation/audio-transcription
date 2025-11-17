@@ -97,7 +97,7 @@ data/
 annotated_data/
 annotation_data/
 audio_files/
-wadhwani_data/
+wadhwani_sample_data/
 gcp-credentials*.json
 *credentials*.json
 gcp-credentials_bkp.json

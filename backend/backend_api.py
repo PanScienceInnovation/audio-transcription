@@ -26,6 +26,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from backend.audio_diarization import process_diarization
 from backend.multilingual_transcription import transcribe_audio as multilingual_transcribe
 from pipeline.pipeline_config import LANGUAGE_CODES
+from utils.storage import StorageManager
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load environment variables from backend directory
+backend_dir = Path(__file__).parent
+env_path = backend_dir / '.env'
+load_dotenv(dotenv_path=env_path)
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend
@@ -47,6 +55,9 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
+
+# Initialize storage manager
+storage_manager = StorageManager()
 
 
 def allowed_audio_file(filename):
@@ -181,24 +192,57 @@ def transcribe_audio():
             reference_passage=reference_text
         )
         
-        # Extract only the words array with required fields in exact order
+        # Get audio duration from the audio file
+        from pydub import AudioSegment
+        audio = AudioSegment.from_file(audio_path)
+        audio_duration = len(audio) / 1000.0  # Convert to seconds
+        
+        # Extract words from annotations
+        # result structure: {"id": ..., "filename": ..., "annotations": [...]}
+        # Each annotation: {"start": "H:MM:SS.mmm", "end": "H:MM:SS.mmm", "Transcription": ["word"]}
         simplified_words = []
-        for word_obj in result.get('words', []):
+        annotations = result.get('annotations', [])
+        
+        for annotation in annotations:
+            # Extract word from Transcription array
+            transcription_list = annotation.get('Transcription', [])
+            word_text = transcription_list[0] if transcription_list else ''
+            
+            start_time = annotation.get('start', '')
+            end_time = annotation.get('end', '')
+            
+            # Calculate duration in seconds
+            duration = 0
+            if start_time and end_time:
+                # Convert timestamps to seconds for duration calculation
+                def timestamp_to_seconds(ts):
+                    parts = ts.split(':')
+                    if len(parts) == 3:  # H:MM:SS.mmm
+                        return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+                    elif len(parts) == 2:  # MM:SS.mmm
+                        return float(parts[0]) * 60 + float(parts[1])
+                    return float(ts)
+                
+                start_sec = timestamp_to_seconds(start_time)
+                end_sec = timestamp_to_seconds(end_time)
+                duration = end_sec - start_sec
+            
             simplified_words.append({
-                'start': word_obj.get('start'),
-                'word': word_obj.get('word'),
-                'end': word_obj.get('end'),
-                'duration': word_obj.get('duration'),
-                'language': word_obj.get('language')
+                'start': start_time,
+                'word': word_text,
+                'end': end_time,
+                'duration': duration,
+                'language': source_language
             })
         
         print(f"✅ Transcription completed: {len(simplified_words)} words")
+        print(f"   Audio duration: {audio_duration:.3f}s")
         
         # Prepare response with minimal metadata (audio_path needed for frontend playback)
         response_data = {
             'words': simplified_words,
             'language': source_language,
-            'audio_duration': result.get('audio_duration', 0),
+            'audio_duration': audio_duration,
             'total_words': len(simplified_words),
             'metadata': {
                 'audio_path': f"/api/audio/{unique_filename}"
@@ -237,6 +281,122 @@ def serve_audio(filename):
             'success': False,
             'error': str(e)
         }), 404
+
+
+@app.route('/api/audio/s3-proxy', methods=['GET'])
+def proxy_s3_audio():
+    """
+    Proxy audio files from S3 to avoid CORS issues.
+    
+    Query Parameters:
+        - url: S3 URL of the audio file
+        - key: S3 key (alternative to url)
+    """
+    try:
+        import requests
+        from io import BytesIO
+        
+        s3_url = request.args.get('url')
+        s3_key = request.args.get('key')
+        
+        if not s3_url and not s3_key:
+            return jsonify({
+                'success': False,
+                'error': 'Either url or key parameter is required'
+            }), 400
+        
+        # If key is provided, construct URL
+        if s3_key and not s3_url:
+            bucket_name = storage_manager.s3_bucket_name
+            region = storage_manager.s3_region
+            s3_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{s3_key}"
+        
+        # Use boto3 to get the object from S3 (handles authentication)
+        if storage_manager.s3_client:
+            try:
+                # Parse bucket and key from URL
+                # URL format: https://bucket.s3.region.amazonaws.com/key
+                # Example: https://audio-files-transcripn.s3.ap-south-1.amazonaws.com/audio/file.mp3
+                
+                if s3_key:
+                    # If key is provided, use it directly
+                    bucket = storage_manager.s3_bucket_name
+                    key = s3_key
+                else:
+                    # Parse from URL
+                    # Remove https://
+                    url_without_protocol = s3_url.replace('https://', '').replace('http://', '')
+                    
+                    # Split by .s3. to get bucket and rest
+                    if '.s3.' in url_without_protocol:
+                        parts = url_without_protocol.split('.s3.', 1)
+                        bucket = parts[0]
+                        # Get everything after .amazonaws.com/ as the key
+                        if '.amazonaws.com/' in parts[1]:
+                            key = parts[1].split('.amazonaws.com/', 1)[1]
+                        else:
+                            # Fallback: try to extract from path
+                            key = s3_url.split('.amazonaws.com/', 1)[1] if '.amazonaws.com/' in s3_url else s3_url.split('/')[-1]
+                    else:
+                        # Fallback parsing
+                        bucket = storage_manager.s3_bucket_name
+                        key = s3_url.split('/')[-1]
+                
+                print(f"📦 Fetching from S3: bucket={bucket}, key={key}")
+                
+                # Get object from S3
+                response = storage_manager.s3_client.get_object(Bucket=bucket, Key=key)
+                
+                # Get content type
+                content_type = response.get('ContentType', 'audio/mpeg')
+                
+                # Stream the file
+                from flask import Response
+                return Response(
+                    response['Body'].read(),
+                    mimetype=content_type,
+                    headers={
+                        'Content-Disposition': f'inline; filename="{key.split("/")[-1]}"',
+                        'Access-Control-Allow-Origin': '*',
+                        'Cache-Control': 'public, max-age=3600'
+                    }
+                )
+            except Exception as s3_error:
+                print(f"Error fetching from S3: {str(s3_error)}")
+                # Fallback to direct URL fetch (may still have CORS issues)
+                pass
+        
+        # Fallback: try direct fetch (may fail due to CORS, but worth trying)
+        try:
+            response = requests.get(s3_url, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            content_type = response.headers.get('Content-Type', 'audio/mpeg')
+            
+            from flask import Response
+            return Response(
+                response.content,
+                mimetype=content_type,
+                headers={
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'public, max-age=3600'
+                }
+            )
+        except Exception as fetch_error:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to fetch audio: {str(fetch_error)}'
+            }), 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error proxying S3 audio: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 @app.route('/api/transcription/<filename>', methods=['GET'])
@@ -458,6 +618,201 @@ def transcribe_phrases():
         }), 500
 
 
+@app.route('/api/transcription/save-to-database', methods=['POST'])
+def save_to_database():
+    """
+    Save audio file to S3 and transcription data to MongoDB.
+    
+    JSON Body:
+        - audio_filename: Filename of the audio file (from metadata.audio_path)
+        - transcription_data: Complete transcription data (words/phrases, metadata, etc.)
+        - transcription_type: Type of transcription ('words' or 'phrases')
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No data provided'
+            }), 400
+        
+        # Extract audio filename from audio_path or use provided filename
+        audio_path = data.get('audio_path', '')
+        audio_filename = data.get('audio_filename', '')
+        
+        # Parse audio filename from path if needed
+        if audio_path and not audio_filename:
+            # Extract filename from path like "/api/audio/1234567890_filename.mp3"
+            audio_filename = audio_path.split('/')[-1] if '/' in audio_path else audio_path
+        
+        if not audio_filename:
+            return jsonify({
+                'success': False,
+                'error': 'Audio filename is required'
+            }), 400
+        
+        # Get local audio file path
+        local_audio_path = os.path.join(AUDIO_FOLDER, audio_filename)
+        
+        if not os.path.exists(local_audio_path):
+            return jsonify({
+                'success': False,
+                'error': f'Audio file not found: {audio_filename}'
+            }), 404
+        
+        # Get transcription data
+        transcription_data = data.get('transcription_data')
+        if not transcription_data:
+            return jsonify({
+                'success': False,
+                'error': 'Transcription data is required'
+            }), 400
+        
+        # Save to S3 and MongoDB
+        result = storage_manager.save_transcription(
+            local_audio_path=local_audio_path,
+            transcription_data=transcription_data,
+            original_filename=audio_filename
+        )
+        
+        if result['success']:
+            print(f"💾 Saved transcription to database: {result.get('mongodb_id')}")
+            return jsonify({
+                'success': True,
+                'message': result.get('message', 'Data saved successfully'),
+                's3_metadata': result.get('s3_metadata'),
+                'mongodb_id': result.get('mongodb_id')
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to save data')
+            }), 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error saving to database: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        }), 500
+
+
+@app.route('/api/transcriptions', methods=['GET'])
+def list_transcriptions():
+    """
+    List all saved transcriptions from MongoDB.
+    
+    Query Parameters:
+        - limit: Maximum number of results (default: 100)
+        - skip: Number of results to skip (default: 0)
+    """
+    try:
+        limit = int(request.args.get('limit', 100))
+        skip = int(request.args.get('skip', 0))
+        
+        result = storage_manager.list_transcriptions(limit=limit, skip=skip)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'data': result
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to list transcriptions')
+            }), 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error listing transcriptions: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/transcriptions/<transcription_id>', methods=['GET'])
+def get_transcription_by_id(transcription_id):
+    """
+    Get a single transcription by MongoDB document ID.
+    """
+    try:
+        document = storage_manager.get_transcription(transcription_id)
+        
+        if document:
+            return jsonify({
+                'success': True,
+                'data': document
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Transcription not found'
+            }), 404
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error getting transcription: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/transcriptions/<transcription_id>', methods=['PUT'])
+def update_transcription_by_id(transcription_id):
+    """
+    Update a transcription in MongoDB.
+    
+    JSON Body:
+        - transcription_data: Updated transcription data
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'transcription_data' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'transcription_data is required'
+            }), 400
+        
+        transcription_data = data['transcription_data']
+        
+        result = storage_manager.update_transcription(transcription_id, transcription_data)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'message': result.get('message', 'Transcription updated successfully'),
+                'document_id': result.get('document_id')
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to update transcription')
+            }), 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error updating transcription: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.errorhandler(413)
 def request_entity_too_large(error):
     """Handle file too large error."""
@@ -492,9 +847,14 @@ if __name__ == '__main__':
     print("   POST /api/transcribe                  - Transcribe audio (word-level)")
     print("   POST /api/transcribe/phrases          - Transcribe audio (phrase-level with emotions)")
     print("   GET  /api/audio/<filename>            - Serve audio file")
+    print("   GET  /api/audio/s3-proxy              - Proxy S3 audio (CORS fix)")
     print("   GET  /api/transcription/<filename>    - Get transcription")
     print("   POST /api/transcription/save          - Save edited transcription")
+    print("   POST /api/transcription/save-to-database - Save to S3 and MongoDB")
     print("   GET  /api/transcription/download/<f>  - Download transcription")
+    print("   GET  /api/transcriptions              - List all saved transcriptions")
+    print("   GET  /api/transcriptions/<id>         - Get transcription by ID")
+    print("   PUT  /api/transcriptions/<id>         - Update transcription by ID")
     print("="*100 + "\n")
     
     # Run server
