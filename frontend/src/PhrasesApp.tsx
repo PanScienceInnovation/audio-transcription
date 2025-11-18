@@ -1,6 +1,6 @@
-import { useState, useRef, useMemo, useCallback } from 'react';
+import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Users, Smile, Database, ChevronDown, ChevronUp } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Users, Smile, Database, ChevronDown, ChevronUp, Edit, FolderOpen, Trash2 } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = 'http://localhost:5001';
@@ -23,9 +23,45 @@ interface TranscriptionData {
   total_phrases: number;
   reference_text?: string;
   metadata?: {
-    filename: string;
-    audio_path: string;
+    filename?: string;
+    audio_path?: string;
   };
+}
+
+interface SavedTranscriptionSummary {
+  _id: string;
+  created_at: string;
+  updated_at: string;
+  transcription_type: 'words' | 'phrases';
+  language: string;
+  total_words: number;
+  total_phrases: number;
+  audio_duration: number;
+  s3_url: string;
+  filename: string;
+}
+
+interface SavedTranscriptionDocument {
+  _id: string;
+  transcription_data: {
+    words?: any[];
+    phrases?: Phrase[];
+    language: string;
+    audio_duration: number;
+    total_words?: number;
+    total_phrases?: number;
+    transcription_type: 'words' | 'phrases';
+    metadata?: {
+      filename?: string;
+    };
+  };
+  s3_metadata: {
+    url: string;
+    bucket: string;
+    key: string;
+  };
+  created_at: string;
+  updated_at: string;
 }
 
 function PhrasesApp() {
@@ -61,8 +97,104 @@ function PhrasesApp() {
   const [hasChanges, setHasChanges] = useState(false);
   const [savingToDatabase, setSavingToDatabase] = useState(false);
   const [isUploadFormExpanded, setIsUploadFormExpanded] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [newFilename, setNewFilename] = useState('');
+  const [savedTranscriptions, setSavedTranscriptions] = useState<SavedTranscriptionSummary[]>([]);
+  const [loadingSaved, setLoadingSaved] = useState(false);
   
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
+
+  // Fetch saved transcriptions on mount
+  useEffect(() => {
+    fetchSavedTranscriptions();
+  }, []);
+
+  const fetchSavedTranscriptions = async () => {
+    setLoadingSaved(true);
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/transcriptions`);
+      if (response.data.success) {
+        const allTranscriptions = response.data.data.transcriptions || [];
+        // Filter only 'phrases' type transcriptions
+        const phrasesTranscriptions = allTranscriptions.filter(
+          (t: SavedTranscriptionSummary) => t.transcription_type === 'phrases'
+        );
+        setSavedTranscriptions(phrasesTranscriptions);
+      }
+    } catch (error: any) {
+      console.error('Error fetching saved transcriptions:', error);
+    } finally {
+      setLoadingSaved(false);
+    }
+  };
+
+  const loadSavedTranscription = async (id: string) => {
+    setLoadingSaved(true);
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/transcriptions/${id}`);
+      if (response.data.success) {
+        const doc: SavedTranscriptionDocument = response.data.data;
+        const transcriptionData = doc.transcription_data;
+
+        if (transcriptionData.transcription_type === 'phrases' && transcriptionData.phrases) {
+          // Convert saved transcription to PhrasesApp's TranscriptionData format
+          const loadedData: TranscriptionData = {
+            phrases: transcriptionData.phrases,
+            language: transcriptionData.language,
+            audio_duration: transcriptionData.audio_duration,
+            total_phrases: transcriptionData.total_phrases || transcriptionData.phrases.length,
+            metadata: {
+              filename: transcriptionData.metadata?.filename || 'Loaded Transcription',
+              audio_path: '', // Will be set from S3
+            },
+          };
+
+          setTranscriptionData(loadedData);
+          setAudioDuration(transcriptionData.audio_duration);
+
+          // Set audio URL using proxy endpoint
+          if (doc.s3_metadata?.url) {
+            const s3Url = encodeURIComponent(doc.s3_metadata.url);
+            setAudioUrl(`${API_BASE_URL}/api/audio/s3-proxy?url=${s3Url}`);
+          } else if (doc.s3_metadata?.key) {
+            const s3Key = encodeURIComponent(doc.s3_metadata.key);
+            setAudioUrl(`${API_BASE_URL}/api/audio/s3-proxy?key=${s3Key}`);
+          }
+
+          setHasChanges(false);
+        }
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error loading transcription:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setLoadingSaved(false);
+    }
+  };
+
+  const deleteSavedTranscription = async (id: string) => {
+    const confirmed = window.confirm(
+      'Are you sure you want to delete this transcription?\n\n' +
+      'This action cannot be undone.'
+    );
+    
+    if (!confirmed) return;
+
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/api/transcriptions/${id}`);
+      if (response.data.success) {
+        alert('Transcription deleted successfully!');
+        fetchSavedTranscriptions();
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error deleting transcription:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    }
+  };
 
   const handleAudioFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -109,12 +241,20 @@ function PhrasesApp() {
       });
 
       if (response.data.success) {
-        setTranscriptionData(response.data.data);
-        if (response.data.data.metadata?.audio_path) {
-          setAudioUrl(`${API_BASE_URL}${response.data.data.metadata.audio_path}`);
+        const data = response.data.data;
+        // Ensure filename is set in metadata if not present
+        if (!data.metadata?.filename && audioFile) {
+          data.metadata = {
+            ...data.metadata,
+            filename: audioFile.name
+          };
         }
-        if (response.data.data.audio_duration && response.data.data.audio_duration > 0) {
-          setAudioDuration(response.data.data.audio_duration);
+        setTranscriptionData(data);
+        if (data.metadata?.audio_path) {
+          setAudioUrl(`${API_BASE_URL}${data.metadata.audio_path}`);
+        }
+        if (data.audio_duration && data.audio_duration > 0) {
+          setAudioDuration(data.audio_duration);
         } else {
           setAudioDuration(null);
         }
@@ -278,6 +418,24 @@ function PhrasesApp() {
     link.click();
   };
 
+  const handleRename = () => {
+    if (!newFilename.trim() || !transcriptionData) {
+      alert('Please enter a valid filename');
+      return;
+    }
+
+    setTranscriptionData({
+      ...transcriptionData,
+      metadata: {
+        ...transcriptionData.metadata,
+        filename: newFilename.trim()
+      }
+    });
+
+    setIsRenaming(false);
+    setNewFilename('');
+  };
+
   const saveToDatabase = async () => {
     if (!transcriptionData) return;
 
@@ -287,6 +445,9 @@ function PhrasesApp() {
       // Extract audio filename from audio_path
       const audioPath = transcriptionData.metadata?.audio_path || '';
       const audioFilename = audioPath.split('/').pop() || '';
+      
+      // Use renamed filename if available, otherwise use original
+      const finalFilename = transcriptionData.metadata?.filename || audioFilename;
 
       // Prepare transcription data
       const transcriptionDataToSave = {
@@ -296,7 +457,10 @@ function PhrasesApp() {
         total_phrases: transcriptionData.total_phrases,
         reference_text: transcriptionData.reference_text,
         transcription_type: 'phrases',
-        metadata: transcriptionData.metadata
+        metadata: {
+          ...transcriptionData.metadata,
+          filename: finalFilename
+        }
       };
 
       const saveData = {
@@ -312,6 +476,7 @@ function PhrasesApp() {
 
       if (response.data.success) {
         alert(`Successfully saved to database!\nMongoDB ID: ${response.data.mongodb_id}\nS3 URL: ${response.data.s3_metadata?.url || 'N/A'}`);
+        fetchSavedTranscriptions(); // Refresh the saved transcriptions list
       } else {
         alert(`Error: ${response.data.error}`);
       }
@@ -367,7 +532,7 @@ function PhrasesApp() {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-800 mb-2">
-            Phrase-Level Transcription Editor
+            Phrase-Level Transcription Module
           </h1>
           <p className="text-gray-600">Speaker diarization, emotion detection, and phrase-level editing</p>
         </div>
@@ -484,14 +649,136 @@ function PhrasesApp() {
           </div>
         )}
 
+        {/* Saved Transcriptions Section */}
+        {!transcriptionData && (
+          <div className="max-w-7xl mx-auto mb-8">
+            {loadingSaved ? (
+              <div className="flex justify-center items-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
+              </div>
+            ) : savedTranscriptions.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <Database className="h-12 w-12 mx-auto mb-3 text-gray-400" />
+                <p>No saved phrase-level transcriptions found</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {savedTranscriptions.map((transcription) => (
+                  <div
+                    key={transcription._id}
+                    className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <h3 className="font-semibold text-gray-800 text-sm truncate flex-1">
+                        {transcription.filename || 'Untitled'}
+                      </h3>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteSavedTranscription(transcription._id);
+                        }}
+                        className="ml-2 text-red-600 hover:text-red-800 p-1"
+                        title="Delete"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="text-xs text-gray-600 space-y-1 mb-3">
+                      <div className="flex justify-between">
+                        <span>Phrases:</span>
+                        <span className="font-medium">{transcription.total_phrases}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Duration:</span>
+                        <span className="font-medium">{transcription.audio_duration?.toFixed(2) || '0.00'}s</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Language:</span>
+                        <span className="font-medium">{transcription.language}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Created:</span>
+                        <span className="font-medium">{new Date(transcription.created_at).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => loadSavedTranscription(transcription._id)}
+                      disabled={loadingSaved}
+                      className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                    >
+                      <FolderOpen className="h-4 w-4" />
+                      Load Transcription
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Results Section */}
         {transcriptionData && (
           <div className="space-y-6">
             {/* Info Bar */}
             <div className="bg-white rounded-lg shadow-lg p-6">
               <div className="flex justify-between items-center flex-wrap gap-4">
-                <div>
-                  <h2 className="text-2xl font-semibold text-gray-800">Transcription Results</h2>
+                <div className="flex-1">
+                  {isRenaming ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={newFilename}
+                        onChange={(e) => setNewFilename(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleRename();
+                          } else if (e.key === 'Escape') {
+                            setIsRenaming(false);
+                            setNewFilename('');
+                          }
+                        }}
+                        className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-lg font-semibold"
+                        placeholder="Enter new filename"
+                        autoFocus
+                      />
+                      <button
+                        onClick={handleRename}
+                        className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg"
+                      >
+                        <Check className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsRenaming(false);
+                          setNewFilename('');
+                        }}
+                        className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-lg"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div>
+                      <h2 className="text-2xl font-semibold text-gray-800">Transcription Results</h2>
+                      {transcriptionData.metadata?.filename && (
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-sm text-gray-600">
+                            File: {transcriptionData.metadata.filename}
+                          </span>
+                          <button
+                            onClick={() => {
+                              setNewFilename(transcriptionData.metadata?.filename || '');
+                              setIsRenaming(true);
+                            }}
+                            className="text-purple-600 hover:text-purple-800"
+                            title="Rename file"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   {hasChanges && (

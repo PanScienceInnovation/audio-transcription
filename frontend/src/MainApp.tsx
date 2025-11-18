@@ -1,51 +1,93 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import App from './App';
 import PhrasesApp from './PhrasesApp';
-import SavedTranscriptions from './SavedTranscriptions';
-import { Mic2, MessageSquare, Database } from 'lucide-react';
+import { Mic2, MessageSquare, LogOut } from 'lucide-react';
 
-function MainApp() {
-  const [currentView, setCurrentView] = useState<'words' | 'phrases' | 'saved'>('words');
+interface MainAppProps {
+  onSignOut?: () => void;
+}
+
+function MainApp({ onSignOut }: MainAppProps) {
+  const [currentView, setCurrentView] = useState<'words' | 'phrases'>('words');
+  const [user, setUser] = useState<any>(null);
+
+  useEffect(() => {
+    // Get user info from localStorage
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      try {
+        setUser(JSON.parse(userStr));
+      } catch (e) {
+        console.error('Error parsing user data:', e);
+      }
+    }
+  }, []);
+
+  const handleSignOut = () => {
+    if (onSignOut) {
+      onSignOut();
+    }
+  };
 
   return (
     <div>
-      <div className="flex items-center space-x-1 bg-transparent border-none p-2">
-        <button
-          onClick={() => setCurrentView('words')}
-          className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${currentView === 'words'
-              ? 'bg-blue-600 text-white shadow-lg'
-              : 'text-blue-600 hover:bg-blue-50'
-            }`}
-        >
-          <Mic2 className="h-5 w-5" />
-          Word-Level
-        </button>
-        <button
-          onClick={() => setCurrentView('phrases')}
-          className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${currentView === 'phrases'
-              ? 'bg-purple-600 text-white shadow-lg'
-              : 'text-purple-600 hover:bg-purple-50'
-            }`}
-        >
-          <MessageSquare className="h-5 w-5" />
-          Phrase-Level
-        </button>
-        <button
-          onClick={() => setCurrentView('saved')}
-          className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${currentView === 'saved'
-              ? 'bg-indigo-600 text-white shadow-lg'
-              : 'text-indigo-600 hover:bg-indigo-50'
-            }`}
-        >
-          <Database className="h-5 w-5" />
-          Saved
-        </button>
+      {/* Header with user info and sign out */}
+      <div className="bg-white shadow-sm border-b border-gray-200 px-4 py-3 mb-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center space-x-1">
+            <button
+              onClick={() => setCurrentView('words')}
+              className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${currentView === 'words'
+                  ? 'bg-blue-600 text-white shadow-lg'
+                  : 'text-blue-600 hover:bg-blue-50'
+                }`}
+            >
+              <Mic2 className="h-5 w-5" />
+              Word-Level
+            </button>
+            <button
+              onClick={() => setCurrentView('phrases')}
+              className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${currentView === 'phrases'
+                  ? 'bg-purple-600 text-white shadow-lg'
+                  : 'text-purple-600 hover:bg-purple-50'
+                }`}
+            >
+              <MessageSquare className="h-5 w-5" />
+              Phrase-Level
+            </button>
+          </div>
+          
+          {/* User info and sign out */}
+          <div className="flex items-center gap-4">
+            {user && (
+              <div className="flex items-center gap-2 text-gray-700">
+                {user.picture && (
+                  <img
+                    src={user.picture}
+                    alt={user.name || 'User'}
+                    className="w-8 h-8 rounded-full"
+                  />
+                )}
+                <span className="text-sm font-medium hidden md:block">
+                  {user.name || user.email}
+                </span>
+              </div>
+            )}
+            <button
+              onClick={handleSignOut}
+              className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="hidden md:inline">Sign Out</span>
+            </button>
+          </div>
+        </div>
       </div>
       
       {/* Content */}
       {currentView === 'words' && <App />}
       {currentView === 'phrases' && <PhrasesApp />}
-      {currentView === 'saved' && <SavedTranscriptions />}
     </div>
   );
 }

@@ -358,6 +358,10 @@ class StorageManager:
                 transcription_data = doc.get('transcription_data', {})
                 s3_metadata = doc.get('s3_metadata', {})
                 
+                # Get filename from metadata if available, otherwise from S3 key
+                metadata = transcription_data.get('metadata', {})
+                display_filename = metadata.get('filename') or s3_metadata.get('key', '').split('/')[-1] if s3_metadata.get('key') else ''
+                
                 summary = {
                     '_id': doc['_id'],
                     'created_at': doc.get('created_at'),
@@ -368,7 +372,7 @@ class StorageManager:
                     'total_phrases': transcription_data.get('total_phrases', 0),
                     'audio_duration': transcription_data.get('audio_duration', 0),
                     's3_url': s3_metadata.get('url', ''),
-                    'filename': s3_metadata.get('key', '').split('/')[-1] if s3_metadata.get('key') else ''
+                    'filename': display_filename
                 }
                 transcriptions.append(summary)
             

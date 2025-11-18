@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2 } from 'lucide-react';
+import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = 'http://localhost:5001';
@@ -47,6 +47,9 @@ interface TranscriptionDocument {
     total_words?: number;
     total_phrases?: number;
     transcription_type: 'words' | 'phrases';
+    metadata?: {
+      filename?: string;
+    };
   };
   s3_metadata: {
     url: string;
@@ -89,6 +92,8 @@ function SavedTranscriptions() {
   const [hasChanges, setHasChanges] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [newFilename, setNewFilename] = useState('');
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -383,6 +388,52 @@ function SavedTranscriptions() {
     link.click();
   };
 
+  const handleRename = async () => {
+    if (!newFilename.trim() || !selectedTranscription) {
+      alert('Please enter a valid filename');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      // Update the transcription data with new filename
+      const updatedTranscription = {
+        ...selectedTranscription,
+        transcription_data: {
+          ...selectedTranscription.transcription_data,
+          metadata: {
+            ...(selectedTranscription.transcription_data.metadata || {}),
+            filename: newFilename.trim()
+          }
+        }
+      };
+
+      const response = await axios.put(
+        `${API_BASE_URL}/api/transcriptions/${selectedTranscription._id}`,
+        {
+          transcription_data: updatedTranscription.transcription_data,
+        }
+      );
+
+      if (response.data.success) {
+        setSelectedTranscription(updatedTranscription);
+        setIsRenaming(false);
+        setNewFilename('');
+        setHasChanges(false);
+        // Refresh the list
+        fetchTranscriptions();
+        alert('Filename updated successfully!');
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error renaming:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const deleteTranscription = async (id: string, showConfirm: boolean = true) => {
     if (showConfirm) {
       const confirmed = window.confirm(
@@ -460,11 +511,62 @@ function SavedTranscriptions() {
               Back to List
             </button>
             <div className="flex justify-between items-center flex-wrap gap-4">
-              <div>
-                <h1 className="text-4xl font-bold text-gray-800 mb-2">Saved Transcription</h1>
-                <p className="text-gray-600">
-                  Created: {new Date(selectedTranscription.created_at).toLocaleString()}
-                </p>
+              <div className="flex-1">
+                {isRenaming ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={newFilename}
+                      onChange={(e) => setNewFilename(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleRename();
+                        } else if (e.key === 'Escape') {
+                          setIsRenaming(false);
+                          setNewFilename('');
+                        }
+                      }}
+                      className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-2xl font-bold"
+                      placeholder="Enter new filename"
+                      autoFocus
+                    />
+                    <button
+                      onClick={handleRename}
+                      disabled={saving}
+                      className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white px-3 py-2 rounded-lg"
+                    >
+                      <Check className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsRenaming(false);
+                        setNewFilename('');
+                      }}
+                      className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-lg"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <h1 className="text-4xl font-bold text-gray-800 mb-2 flex items-center gap-2">
+                      {selectedTranscription.transcription_data.metadata?.filename || 'Saved Transcription'}
+                      <button
+                        onClick={() => {
+                          setNewFilename(selectedTranscription.transcription_data.metadata?.filename || 'Untitled');
+                          setIsRenaming(true);
+                        }}
+                        className="text-indigo-600 hover:text-indigo-800"
+                        title="Rename file"
+                      >
+                        <Edit className="h-5 w-5" />
+                      </button>
+                    </h1>
+                    <p className="text-gray-600">
+                      Created: {new Date(selectedTranscription.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                )}
               </div>
               <div className="flex gap-2">
                 {hasChanges && (
@@ -828,6 +930,9 @@ function SavedTranscriptions() {
                 <h3 className="text-lg font-semibold text-gray-800 mb-2">
                   {transcription.filename || 'Untitled'}
                 </h3>
+                {/* {transcription.filename && (
+                  <p className="text-xs text-gray-500 mb-2">Original: {transcription.filename}</p>
+                )} */}
                 <div className="space-y-2 text-sm text-gray-600">
                   <div className="flex justify-between">
                     <span>Language:</span>

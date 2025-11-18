@@ -21,13 +21,14 @@ from pydub import AudioSegment
 from utils.file_utils import ensure_dir, clear_gpu_memory, save_json
 from utils.audio_utils import extract_audio_clips
 from utils.audio_splitter import split_audio
+import tempfile
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pipeline.pipeline_config import GOOGLE_APPLICATION_CREDENTIALS, LANGUAGE_CODES
 # Set Google credentials for authentication
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GOOGLE_APPLICATION_CREDENTIALS
-AUDIO_CHUNKING_OFFSET = 300
+AUDIO_CHUNKING_OFFSET = 100
 
 
 def find_script(source_lang):
@@ -174,6 +175,70 @@ def seconds_to_timestamp(seconds: float) -> str:
     secs = seconds % 60
     return f"{minutes:02d}:{secs:06.3f}"
 
+def slow_audio_by_factor(audio_path, speed_factor=0.5):
+    """
+    Slow down audio by a given factor (e.g., 0.5 = half speed).
+    
+    Args:
+        audio_path: Path to the input audio file
+        speed_factor: Speed factor (0.5 = half speed, 2.0 = double speed)
+    
+    Returns:
+        Path to the slowed audio file (temporary file)
+    """
+    # Load audio
+    audio = AudioSegment.from_file(audio_path)
+    
+    # Slow down by manipulating frame rate
+    # To slow by 0.5x, we reduce frame rate to half
+    # This makes the audio play at half speed (pitch will also be lower, but that's okay for transcription)
+    new_frame_rate = int(audio.frame_rate * speed_factor)
+    slowed_audio = audio._spawn(
+        audio.raw_data,
+        overrides={"frame_rate": new_frame_rate}
+    )
+    
+    # Create temporary file for slowed audio
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+    temp_path = temp_file.name
+    temp_file.close()
+    
+    # Export slowed audio with the new frame rate
+    slowed_audio.export(temp_path, format="mp3")
+    
+    return temp_path
+
+def adjust_timestamps_for_speed(json_data, speed_factor=0.5):
+    """
+    Adjust timestamps in JSON data to account for audio speed change.
+    
+    Args:
+        json_data: List of transcription entries with start/end timestamps
+        speed_factor: The speed factor used (0.5 = half speed means timestamps need to be halved)
+    
+    Returns:
+        List of transcription entries with adjusted timestamps
+    """
+    adjusted_data = []
+    
+    for entry in json_data:
+        new_entry = entry.copy()
+        
+        # Convert timestamps to seconds, multiply by speed_factor, then convert back
+        start_seconds = timestamp_to_seconds(entry['start'])
+        end_seconds = timestamp_to_seconds(entry['end'])
+        
+        # Adjust timestamps (if slowed by 0.5x, timestamps are 2x longer, so divide by 2)
+        adjusted_start = start_seconds * speed_factor
+        adjusted_end = end_seconds * speed_factor
+        
+        new_entry['start'] = seconds_to_timestamp(adjusted_start)
+        new_entry['end'] = seconds_to_timestamp(adjusted_end)
+        
+        adjusted_data.append(new_entry)
+    
+    return adjusted_data
+
 def merge_json_with_offset(data, time_offset):
     """
     Merge multiple JSON arrays from a dict and apply offset * i seconds to each i-th array.
@@ -200,8 +265,16 @@ def merge_json_with_offset(data, time_offset):
 
     return merged_array
 
-def transcribe_chunk(idx, chunk_path, source_lang, source_script, target_lang, reference_passage=None):
+def transcribe_chunk(idx, chunk_path, source_lang, source_script, target_lang, reference_passage=None, slow_audio=False, speed_factor=0.5):
     model = GenerativeModel("gemini-2.0-flash")
+    
+    # Slow down audio for more precise timestamps
+    slowed_chunk_path = chunk_path
+    temp_file_created = False
+    if slow_audio:
+        print(f"🎵 Slowing audio chunk {idx} by {speed_factor}x for more precise timestamps...")
+        slowed_chunk_path = slow_audio_by_factor(chunk_path, speed_factor)
+        temp_file_created = True
     
     # Build reference passage section if provided
     reference_section = ""
@@ -225,142 +298,395 @@ def transcribe_chunk(idx, chunk_path, source_lang, source_script, target_lang, r
     prompt = f"""
     Listen to the {source_lang} audio file and produce an accurate, WORD-LEVEL transcription with precise timestamps.
     
-    🎯 OBJECTIVE: 
+    === OBJECTIVE ===
     Generate precise {source_lang} word-level transcriptions in {source_script} script with accurate timestamps.
-    This is a professional transcription task requiring extremely high accuracy.
+    This is a professional transcription task requiring MAXIMUM accuracy with NO post-processing or corrections.
+    
+    === CRITICAL FOUNDATION RULE ===
+    TRANSCRIBE EXACTLY WHAT IS SPOKEN - NOT WHAT SHOULD HAVE BEEN SPOKEN.
+    
+    You MUST capture:
+    - Every word exactly as pronounced (including mispronunciations)
+    - Every repeated word as separate entries
+    - Every broken/partial word segment as separate entries
+    - Every pause within a word (intra-word pauses)
+    - All speech disfluencies, stutters, and natural speech patterns
+    - Regional accents and dialectal variations
+    - Incomplete utterances and false starts
+    
+    You MUST NOT:
+    - Correct mispronunciations to their intended words
+    - Merge repeated words into single entries
+    - Reconstruct broken/partial words into complete words
+    - Normalize or standardize informal speech
+    - Fix grammar or pronunciation errors
+    - Skip any spoken sounds or repetitions
     
     {reference_section}
-    🏷️ SPECIAL TAGS SUMMARY:
-    - <FIL></FIL> = Vocalized fillers like 'અમ' (NOT for single 'અ')
-    - <NOISE></NOISE> = Unintelligible/noisy audio (can wrap words: <NOISE>"word"</NOISE>)
-    - <NPS></NPS> = Non-primary speaker segments
-    - <AI></AI> = Accent-inclusive variations (e.g., <AI>છ</AI> for regional 'છે')
     
-    ⚙️ MANDATORY ANNOTATION RULES (NO EXCEPTIONS):
+    === SPECIAL TAGS - MANDATORY USAGE ===
     
-    1. Language & Script Requirements:
-       ✓ MUST transcribe in {source_script} script ONLY
-       ✓ MUST write EXACTLY what is spoken - no corrections, no normalization
-       ✓ MUST preserve dialectal variations, colloquialisms, and regional pronunciations
-       ✗ DO NOT transliterate to any other script
-       ✗ DO NOT correct grammar or pronunciation
-       ✗ DO NOT standardize informal speech
-       ✗ DO NOT translate or interpret
+    Tag Summary:
+    1. <FIL></FIL> = Vocalized fillers (e.g., 'અમ', 'ઉહ', 'એહ') - NOT for single 'અ'
+    2. <NOISE></NOISE> = Unintelligible/noisy/mumbled audio segments
+    3. <NPS></NPS> = Non-primary speaker segments
+    4. <AI></AI> = Accent-inclusive variations (regional pronunciations)
+    5. <IWP></IWP> = Intra-Word Pause marker (pauses WITHIN a word)
     
-    2. Timestamp Precision (STRICTLY ENFORCED):
-       ✓ MUST provide start and end time for EVERY SINGLE SPOKEN WORD
-       ✓ MUST use format MM:SS.mmm (exactly 3 decimal places, no more, no less)
-       ✓ MUST align timestamps tightly with actual speech boundaries
-       ✓ MUST ensure end time ≤ audio file duration
-       ✓ MUST ensure start time < end time for every entry
-       ✓ MUST order entries chronologically by start time
-       ✗ DO NOT approximate - be precise to milliseconds
-       ✗ DO NOT overlap timestamps between consecutive words
-       ✗ DO NOT leave gaps longer than natural speech pauses
+    CRITICAL: You MUST use these tags wherever applicable. Tag usage is NOT optional.
     
-    3. Word Segmentation Rules:
-       ✓ MUST create one entry per spoken word unit
-       ✓ MUST split compound words if there's a pause >25ms between components
-       ✓ MUST treat contractions as single units unless clearly separated
-       ✗ DO NOT merge multiple words into one entry
-       ✗ DO NOT split continuously spoken syllables
+    === MANDATORY TRANSCRIPTION RULES ===
     
-    4. Special Tags & Cases (Apply When Necessary):
-       
-       a) Fillers and Pauses:
-          ✓ Vocalized fillers like 'અમ' → Use <FIL></FIL> tag
-          ✓ Single 'અ' sound → Transcribe directly as 'અ' (no FIL tag)
-          ✓ Only mark fillers lasting >100ms
-          ✗ DO NOT tag every brief hesitation
-          
-       b) Mumbling and Noise:
-          ✓ Unintelligible or noisy audio → Use <NOISE></NOISE>
-          ✓ Background noise WITH audible word → Use <NOISE>"WORD"</NOISE>
-          ✓ Only background noise (no speech) → Use <NOISE></NOISE> with timestamp
-          ✓ Can be used for unwanted background sounds heard along with orator
-          ✗ DO NOT use for clear speech, even if audio quality is low
-          
-       c) Multiple Speakers:
-          ✓ Non-primary speaker audio → Use <NPS></NPS> tag
-          ✓ MUST timestamp these segments accurately (for audio removal)
-          ✓ Important: These segments may need to be removed to avoid model confusion
-          ✗ DO NOT tag feeble non-primary sounds that don't distort primary speaker
-          ✗ DO NOT use if secondary speaker is barely audible
-          
-       d) Accent Inclusive Transcription:
-          ✓ Regional/local accent variations → Use <AI></AI> tag
-          ✓ MUST transcribe EXACTLY as pronounced, not standard form
-          ✓ Examples:
-             - 'છે' pronounced as 'છ' → Transcribe as <AI>'છ'</AI>
-             - 'છે' pronounced as 'સ' → Transcribe as <AI>'સ'</AI>
-             - 'લાવ્યોતો' pronounced as 'લાયોતો' → Transcribe as <AI>'લાયોતો'</AI>
-          ✓ Captures phoneme omissions, regional sound variations
-          ✗ DO NOT correct to standard pronunciation
-          ✗ DO NOT normalize dialectal variations
+    RULE 1: Language & Script Requirements
+    ────────────────────────────────────────
+    [REQUIRED]
+    • MUST transcribe in {source_script} script ONLY
+    • MUST write EXACTLY what is spoken with all errors preserved
+    • MUST preserve mispronunciations without correction
+    • MUST preserve dialectal variations and colloquialisms
+    • MUST preserve regional pronunciations exactly as heard
+    • MUST preserve incomplete words and false starts
     
-    5. Data Quality Requirements:
-       ✓ MUST avoid duplicate timestamps (same start AND end)
-       ✓ MUST skip silence periods - only transcribe actual speech
-       ✓ MUST validate each entry has all required fields
-       ✗ DO NOT include null, empty, or invalid entries
-       ✗ DO NOT approximate when unsure - re-listen carefully
+    [FORBIDDEN]
+    • DO NOT transliterate to any other script
+    • DO NOT correct mispronunciations or speech errors
+    • DO NOT correct grammar or pronunciation
+    • DO NOT standardize informal speech to formal speech
+    • DO NOT translate or interpret meaning
+    • DO NOT reconstruct what the speaker "meant to say"
     
-    📋 OUTPUT FORMAT (STRICT JSON SCHEMA):
+    RULE 2: Timestamp Precision - STRICTLY ENFORCED
+    ────────────────────────────────────────────────
+    [REQUIRED]
+    • MUST provide start and end time for EVERY SINGLE SPOKEN WORD/SOUND
+    • MUST use format MM:SS.mmm (EXACTLY 3 decimal places)
+    • MUST align timestamps tightly with actual speech boundaries
+    • MUST ensure end time <= audio file duration
+    • MUST ensure start time < end time for every entry
+    • MUST order all entries chronologically by start time
+    • MUST be precise to milliseconds (no rounding beyond milliseconds)
+    
+    [FORBIDDEN]
+    • DO NOT approximate timestamps - be precise
+    • DO NOT overlap timestamps between consecutive words
+    • DO NOT leave gaps longer than natural speech pauses (>200ms)
+    • DO NOT use fewer or more than 3 decimal places
+    
+    RULE 3: Word Segmentation - CRITICAL FOR ACCURACY
+    ──────────────────────────────────────────────────
+    [REQUIRED]
+    • MUST create one entry per spoken word unit
+    • MUST split compound words if there's a pause >25ms between components
+    • MUST treat contractions as single units unless clearly separated in speech
+    
+    [FORBIDDEN]
+    • DO NOT merge multiple words into one entry
+    • DO NOT split continuously spoken syllables without actual pause/break
+    
+    RULE 4: REPEATED WORDS - MANDATORY HANDLING
+    ────────────────────────────────────────────
+    When a word is repeated (spoken multiple times consecutively or with brief pauses):
+    
+    [REQUIRED]
+    • MUST create SEPARATE entries for EACH occurrence
+    • MUST assign distinct timestamps to each repetition
+    • MUST transcribe each repetition exactly as spoken (even if identical)
+    • MUST preserve all stutters, stammers, and false starts
+    
+    Examples:
+    - "hello hello" → TWO entries: [{{"word": "hello"}}, {{"word": "hello"}}]
+    - "I I I think" → FOUR entries: [{{"word": "I"}}, {{"word": "I"}}, {{"word": "I"}}, {{"word": "think"}}]
+    - "the- the book" → THREE entries: [{{"word": "the-"}}, {{"word": "the"}}, {{"word": "book"}}]
+    
+    [FORBIDDEN]
+    • DO NOT merge repeated words into a single entry
+    • DO NOT skip repetitions - each is a distinct speech event
+    • DO NOT combine stutters into one word
+    
+    RULE 5: SUBLEXICAL SPLITS / BROKEN WORDS - MANDATORY HANDLING
+    ──────────────────────────────────────────────────────────────
+    When a word is broken, split, or partially spoken with pauses:
+    
+    [REQUIRED]
+    • MUST transcribe the ACTUAL broken parts as spoken
+    • MUST create separate entries for each broken segment
+    • MUST transcribe exactly what is heard, not the complete intended word
+    • MUST preserve hyphens or trailing sounds that indicate incompleteness
+    • MUST capture partial words, incomplete utterances, and false starts
+    
+    Examples:
+    - "transcription" broken as "trans-" [pause] "cription" → TWO entries: [{{"word": "trans-"}}, {{"word": "cription"}}]
+    - "hello" broken as "hel-" [pause] "lo" → TWO entries: [{{"word": "hel-"}}, {{"word": "lo"}}]
+    - "શબ્દ" broken as "શ" [pause] "બ્દ" → TWO entries: [{{"word": "શ"}}, {{"word": "બ્દ"}}]
+    - Speaker starts word then stops: "beautif-" [stops] "nice" → TWO entries: [{{"word": "beautif-"}}, {{"word": "nice"}}]
+    
+    [FORBIDDEN]
+    • DO NOT reconstruct broken words into complete words
+    • DO NOT merge sublexical segments - preserve actual speech pattern
+    • DO NOT correct or "fix" broken words
+    • DO NOT combine segments separated by pauses
+    
+    RULE 6: MISPRONUNCIATIONS - MANDATORY HANDLING
+    ───────────────────────────────────────────────
+    When a word is pronounced incorrectly or differently from standard:
+    
+    [REQUIRED]
+    • MUST transcribe the ACTUAL pronunciation heard
+    • MUST NOT correct to the intended/standard word
+    • MUST preserve all pronunciation errors exactly as spoken
+    • MUST use <AI></AI> tag for regional/dialectal variations
+    
+    Examples:
+    - Speaker says "ekspecially" instead of "especially" → Transcribe: "ekspecially"
+    - Speaker says "libary" instead of "library" → Transcribe: "libary"
+    - Speaker says "પુસ્તક" as "પુસતક" → Transcribe: "<AI>પુસતક</AI>"
+    
+    [FORBIDDEN]
+    • DO NOT correct mispronunciations to standard form
+    • DO NOT "help" by fixing speech errors
+    • DO NOT standardize non-standard pronunciations (unless using <AI> tag)
+    
+    RULE 7: INTRA-WORD PAUSES - MANDATORY MARKING
+    ──────────────────────────────────────────────
+    NEW REQUIREMENT: When a speaker pauses WITHIN a word (between syllables or sounds):
+    
+    [REQUIRED]
+    • MUST mark the pause location with <IWP></IWP> tag
+    • MUST create separate entries for word segments before and after pause
+    • MUST include the <IWP></IWP> tag as its own timestamped entry at the pause point
+    • MUST preserve the exact pause duration in timestamps
+    
+    Examples:
+    - "beautiful" spoken as "beaut" [100ms pause] "iful":
+      [{{"word": "beaut"}}, {{"word": "<IWP></IWP>"}}, {{"word": "iful"}}]
+    
+    - "transcription" spoken as "tran" [150ms pause] "scrip" [80ms pause] "tion":
+      [{{"word": "tran"}}, {{"word": "<IWP></IWP>"}}, {{"word": "scrip"}}, {{"word": "<IWP></IWP>"}}, {{"word": "tion"}}]
+    
+    - "હેલો" spoken as "હે" [120ms pause] "લો":
+      [{{"word": "હે"}}, {{"word": "<IWP></IWP>"}}, {{"word": "લો"}}]
+    
+    [FORBIDDEN]
+    • DO NOT ignore intra-word pauses
+    • DO NOT merge segments separated by intra-word pauses
+    • DO NOT skip the <IWP></IWP> marker
+    
+    RULE 8: SPECIAL TAGS - DETAILED USAGE REQUIREMENTS
+    ───────────────────────────────────────────────────
+    
+    A. FILLERS <FIL></FIL> - MUST USE WHEN:
+    [REQUIRED]
+    • Vocalized fillers like 'અમ', 'ઉહ', 'એહ', 'hmm', 'uh', 'um' are spoken
+    • Filler lasts >100ms
+    • Format: {{"word": "<FIL></FIL>"}}
+    
+    [FORBIDDEN]
+    • DO NOT use for single 'અ' sound
+    • DO NOT tag brief hesitations <50ms
+    
+    Example: {{"start": "00:05.120", "end": "00:05.450", "word": "<FIL></FIL>", "language": "{source_lang}"}}
+    
+    B. NOISE/MUMBLING <NOISE></NOISE> - MUST USE WHEN:
+    [REQUIRED]
+    • Audio is unintelligible or heavily mumbled
+    • Background noise obscures speech
+    • Word is audible but distorted by noise: <NOISE>"WORD"</NOISE>
+    • Only noise present with no speech: <NOISE></NOISE>
+    • Unwanted background sounds occur alongside primary speaker
+    
+    [FORBIDDEN]
+    • DO NOT use for clear speech with low audio quality
+    • DO NOT overuse for slightly unclear audio
+    
+    Examples:
+    - Noise only: {{"start": "00:10.500", "end": "00:11.200", "word": "<NOISE></NOISE>", "language": "{source_lang}"}}
+    - Word with noise: {{"start": "00:15.300", "end": "00:15.800", "word": "<NOISE>\"શબ્દ\"</NOISE>", "language": "{source_lang}"}}
+    
+    C. NON-PRIMARY SPEAKER <NPS></NPS> - MUST USE WHEN:
+    [REQUIRED]
+    • Non-primary speaker audio is present and audible
+    • MUST timestamp these segments accurately (for potential audio removal)
+    • Secondary speaker speech may cause model confusion
+    • Use when background voices are distinct and potentially disruptive
+    
+    [FORBIDDEN]
+    • DO NOT tag feeble background sounds that don't interfere
+    • DO NOT use if secondary speaker is barely audible
+    
+    Example: {{"start": "00:20.100", "end": "00:22.500", "word": "<NPS></NPS>", "language": "{source_lang}"}}
+    
+    D. ACCENT INCLUSIVE <AI></AI> - MUST USE WHEN:
+    [REQUIRED]
+    • Regional/local accent variations are present
+    • MUST transcribe EXACTLY as pronounced, NOT standard form
+    • Captures phoneme omissions, substitutions, regional variations
+    • Use for dialectal pronunciations that differ from standard
+    
+    Examples:
+    - 'છે' pronounced as 'છ' → <AI>છ</AI>
+    - 'છે' pronounced as 'સ' → <AI>સ</AI>
+    - 'લાવ્યોતો' pronounced as 'લાયોતો' → <AI>લાયોતો</AI>
+    - 'going to' pronounced as 'gonna' → <AI>gonna</AI>
+    
+    [FORBIDDEN]
+    • DO NOT correct to standard pronunciation
+    • DO NOT normalize dialectal variations
+    
+    Example: {{"start": "00:25.000", "end": "00:25.400", "word": "<AI>છ</AI>", "language": "{source_lang}"}}
+    
+    E. INTRA-WORD PAUSE <IWP></IWP> - MUST USE WHEN:
+    [REQUIRED]
+    • Speaker pauses between syllables/sounds within a single word
+    • Pause duration is >50ms within word boundaries
+    • Acts as boundary marker between word segments
+    
+    Example: {{"start": "00:30.250", "end": "00:30.350", "word": "<IWP></IWP>", "language": "{source_lang}"}}
+    
+    RULE 9: Data Quality Requirements
+    ──────────────────────────────────
+    [REQUIRED]
+    • MUST avoid duplicate timestamps (same start AND end)
+    • MUST skip silence periods - only transcribe actual speech/sounds
+    • MUST validate each entry has all required fields
+    • MUST use tags where applicable - tagging is mandatory, not optional
+    • MUST ensure every special case is properly tagged
+    
+    [FORBIDDEN]
+    • DO NOT include null, empty, or invalid entries
+    • DO NOT approximate when unsure - re-listen carefully
+    • DO NOT skip tags to save effort - they are required for accuracy
+    
+    === OUTPUT FORMAT - STRICT JSON SCHEMA ===
+    
     ```json
     [
     {{
     "start": "MM:SS.mmm",
     "end": "MM:SS.mmm",
-    "word": "word in {source_script} script",
+    "word": "word in {source_script} script OR tagged content",
     "language": "{source_lang}"
     }}
     ]
     ```
     
-    📌 EXAMPLES OF TAGGED OUTPUT:
-    - Filler: {{"start": "00:05.120", "end": "00:05.450", "word": "<FIL></FIL>", "language": "{source_lang}"}}
-    - Single 'અ': {{"start": "00:05.120", "end": "00:05.200", "word": "અ", "language": "{source_lang}"}}
-    - Noise only: {{"start": "00:10.500", "end": "00:11.200", "word": "<NOISE></NOISE>", "language": "{source_lang}"}}
-    - Word with noise: {{"start": "00:15.300", "end": "00:15.800", "word": "<NOISE>\"શબ્દ\"</NOISE>", "language": "{source_lang}"}}
-    - Non-primary speech: {{"start": "00:20.100", "end": "00:22.500", "word": "<NPS></NPS>", "language": "{source_lang}"}}
-    - Accent inclusive: {{"start": "00:25.000", "end": "00:25.400", "word": "<AI>છ</AI>", "language": "{source_lang}"}}
+    === COMPREHENSIVE EXAMPLES ===
     
-    🚨 CRITICAL OUTPUT REQUIREMENTS:
-    ✓ MUST return ONLY the JSON array wrapped in ```json ``` code block
-    ✓ MUST include all four fields (start, end, word, language) for every entry
-    ✓ MUST ensure valid JSON syntax (proper quotes, commas, brackets)
-    ✓ MUST limit each timestamp to exactly 3 decimal places
-    ✓ MUST arrange entries in chronological order
+    Example 1 - Filler:
+    {{"start": "00:05.120", "end": "00:05.450", "word": "<FIL></FIL>", "language": "{source_lang}"}}
     
-    ✗ ABSOLUTELY NO explanatory text before or after the JSON
-    ✗ ABSOLUTELY NO comments within the JSON
-    ✗ ABSOLUTELY NO markdown formatting except the ```json wrapper
-    ✗ ABSOLUTELY NO incomplete entries
-    ✗ ABSOLUTELY NO duplicate timestamps
-    ✗ ABSOLUTELY NO timestamps exceeding audio duration
+    Example 2 - Single 'અ' (NOT a filler):
+    {{"start": "00:05.120", "end": "00:05.200", "word": "અ", "language": "{source_lang}"}}
     
-    ⚡ FINAL VALIDATION CHECKLIST:
-    Before returning, verify:
-    [ ] Every spoken word has an entry
-    [ ] All timestamps are in MM:SS.mmm format with 3 decimals
-    [ ] All entries are in chronological order
+    Example 3 - Noise only:
+    {{"start": "00:10.500", "end": "00:11.200", "word": "<NOISE></NOISE>", "language": "{source_lang}"}}
+    
+    Example 4 - Word with noise:
+    {{"start": "00:15.300", "end": "00:15.800", "word": "<NOISE>\"શબ્દ\"</NOISE>", "language": "{source_lang}"}}
+    
+    Example 5 - Non-primary speaker:
+    {{"start": "00:20.100", "end": "00:22.500", "word": "<NPS></NPS>", "language": "{source_lang}"}}
+    
+    Example 6 - Accent inclusive:
+    {{"start": "00:25.000", "end": "00:25.400", "word": "<AI>છ</AI>", "language": "{source_lang}"}}
+    
+    Example 7 - Repeated words (MUST be separate):
+    {{"start": "00:30.000", "end": "00:30.300", "word": "hello", "language": "{source_lang}"}},
+    {{"start": "00:30.350", "end": "00:30.650", "word": "hello", "language": "{source_lang}"}}
+    
+    Example 8 - Stutter/multiple repetitions:
+    {{"start": "00:35.000", "end": "00:35.200", "word": "the", "language": "{source_lang}"}},
+    {{"start": "00:35.250", "end": "00:35.450", "word": "the", "language": "{source_lang}"}},
+    {{"start": "00:35.500", "end": "00:35.800", "word": "book", "language": "{source_lang}"}}
+    
+    Example 9 - Broken word (sublexical split):
+    {{"start": "00:40.000", "end": "00:40.300", "word": "trans-", "language": "{source_lang}"}},
+    {{"start": "00:40.500", "end": "00:40.900", "word": "cription", "language": "{source_lang}"}}
+    
+    Example 10 - Split word with pause marker:
+    {{"start": "00:45.000", "end": "00:45.250", "word": "hel-", "language": "{source_lang}"}},
+    {{"start": "00:45.500", "end": "00:45.750", "word": "lo", "language": "{source_lang}"}}
+    
+    Example 11 - Intra-word pause with <IWP> marker:
+    {{"start": "00:50.000", "end": "00:50.300", "word": "beaut", "language": "{source_lang}"}},
+    {{"start": "00:50.300", "end": "00:50.400", "word": "<IWP></IWP>", "language": "{source_lang}"}},
+    {{"start": "00:50.400", "end": "00:50.800", "word": "iful", "language": "{source_lang}"}}
+    
+    Example 12 - Mispronunciation (preserved as-is):
+    {{"start": "00:55.000", "end": "00:55.400", "word": "libary", "language": "{source_lang}"}}
+    
+    Example 13 - Regional pronunciation with accent tag:
+    {{"start": "01:00.000", "end": "01:00.500", "word": "<AI>gonna</AI>", "language": "{source_lang}"}}
+    
+    Example 14 - Complex case (repetition + broken word + intra-word pause):
+    {{"start": "01:05.000", "end": "01:05.200", "word": "I", "language": "{source_lang}"}},
+    {{"start": "01:05.250", "end": "01:05.450", "word": "I", "language": "{source_lang}"}},
+    {{"start": "01:05.500", "end": "01:05.800", "word": "thi", "language": "{source_lang}"}},
+    {{"start": "01:05.800", "end": "01:05.900", "word": "<IWP></IWP>", "language": "{source_lang}"}},
+    {{"start": "01:05.900", "end": "01:06.100", "word": "nk", "language": "{source_lang}"}}
+    
+    === CRITICAL OUTPUT REQUIREMENTS ===
+    
+    [REQUIRED]
+    • MUST return ONLY the JSON array wrapped in ```json ``` code block
+    • MUST include all four fields (start, end, word, language) for every entry
+    • MUST ensure valid JSON syntax (proper quotes, commas, brackets)
+    • MUST limit each timestamp to EXACTLY 3 decimal places
+    • MUST arrange entries in chronological order by start time
+    • MUST use special tags wherever applicable (NOT optional)
+    • MUST preserve all speech errors, repetitions, and breaks
+    
+    [FORBIDDEN]
+    • ABSOLUTELY NO explanatory text before or after the JSON
+    • ABSOLUTELY NO comments within the JSON
+    • ABSOLUTELY NO markdown formatting except the ```json wrapper
+    • ABSOLUTELY NO incomplete entries
+    • ABSOLUTELY NO duplicate timestamps
+    • ABSOLUTELY NO timestamps exceeding audio duration
+    • ABSOLUTELY NO corrections or normalizations of spoken content
+    • ABSOLUTELY NO merging of repeated or broken words
+    
+    === FINAL VALIDATION CHECKLIST ===
+    
+    Before returning, verify EVERY item:
+    
+    [ ] Every spoken word/sound has an entry
+    [ ] All timestamps in MM:SS.mmm format with EXACTLY 3 decimals
+    [ ] All entries in chronological order
     [ ] No duplicate timestamps exist
     [ ] No overlapping time ranges exist
-    [ ] All words are in {source_script} script (unless tagged)
-    [ ] Special tags used appropriately:
-        - <FIL></FIL> only for 'અમ' and similar fillers
-        - Single 'અ' transcribed without FIL tag
-        - <NOISE></NOISE> for unintelligible/noisy segments
-        - <NPS></NPS> for non-primary speakers (accurately timestamped)
-        - <AI></AI> for accent variations (transcribed as-is)
-    [ ] Last end time ≤ audio duration
+    [ ] All words in {source_script} script (unless in special tags)
+    [ ] REPEATED WORDS: Each repetition is separate with distinct timestamps
+    [ ] BROKEN WORDS: Sublexically split words are separate segments (NOT reconstructed)
+    [ ] MISPRONUNCIATIONS: Preserved exactly as spoken (NOT corrected)
+    [ ] INTRA-WORD PAUSES: All marked with <IWP></IWP> tag entries
+    [ ] Special tags used WHEREVER applicable:
+        [ ] <FIL></FIL> for fillers 'અમ', 'ઉહ', etc. (NOT single 'અ')
+        [ ] <NOISE></NOISE> for unintelligible/noisy/mumbled segments
+        [ ] <NPS></NPS> for non-primary speakers (accurately timestamped)
+        [ ] <AI></AI> for accent variations (transcribed as pronounced)
+        [ ] <IWP></IWP> for intra-word pauses (between word segments)
+    [ ] Last end time <= audio duration
     [ ] JSON is valid and parseable
     [ ] No explanatory text included
+    [ ] Speech disfluencies preserved exactly as spoken
+    [ ] NO corrections or normalizations applied
+    [ ] ALL special cases properly tagged (tagging is mandatory)
     
-    NOW: Process the audio and return ONLY the pure JSON array.
+    === CRITICAL REMINDERS ===
+    
+    1. TRANSCRIBE WHAT IS SPOKEN, NOT WHAT SHOULD BE SPOKEN
+    2. PRESERVE ALL ERRORS - DO NOT CORRECT ANYTHING
+    3. SEPARATE ENTRIES FOR REPEATED WORDS - NEVER MERGE
+    4. SEPARATE ENTRIES FOR BROKEN WORDS - NEVER RECONSTRUCT
+    5. MARK ALL INTRA-WORD PAUSES WITH <IWP></IWP>
+    6. USE ALL SPECIAL TAGS WHERE APPLICABLE - TAGGING IS MANDATORY
+    7. TIMESTAMPS MUST BE PRECISE TO MILLISECONDS
+    8. OUTPUT MUST BE PURE JSON WITH NO EXTRA TEXT
+    
+    NOW: Process the audio and return ONLY the pure JSON array following ALL rules above.
     """
 
-    with open(chunk_path, "rb") as af:
+    with open(slowed_chunk_path, "rb") as af:
         audio_file = Part.from_data(af.read(), mime_type="audio/mpeg")
 
     safety_settings = [
@@ -389,15 +715,28 @@ def transcribe_chunk(idx, chunk_path, source_lang, source_script, target_lang, r
     content = response.candidates[0].content.text
     print(content)
     json_data = safe_extract_json(content)
+    
+    # Adjust timestamps back to original speed if audio was slowed
+    if slow_audio:
+        print(f"⏱️  Adjusting timestamps for chunk {idx} back to original speed...")
+        json_data = adjust_timestamps_for_speed(json_data, speed_factor)
+    
+    # Clean up temporary slowed audio file
+    if temp_file_created and os.path.exists(slowed_chunk_path):
+        try:
+            os.unlink(slowed_chunk_path)
+        except Exception as e:
+            print(f"⚠️  Warning: Could not delete temporary file {slowed_chunk_path}: {e}")
+    
     return idx, json_data
 
-def transcribe_chunks(audio_uri, source_lang, source_script, target_lang, duration, reference_passage=None):
+def transcribe_chunks(audio_uri, source_lang, source_script, target_lang, duration, reference_passage=None, slow_audio=False, speed_factor=0.5):
     chunks_dict = split_audio(audio_uri)
     results = {}
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future_to_idx = {
-            executor.submit(transcribe_chunk, idx, chunk_uri, source_lang, source_script, target_lang, reference_passage): idx
+            executor.submit(transcribe_chunk, idx, chunk_uri, source_lang, source_script, target_lang, reference_passage, slow_audio, speed_factor): idx
             for idx, chunk_uri in chunks_dict.items()
         }
 
@@ -409,25 +748,25 @@ def transcribe_chunks(audio_uri, source_lang, source_script, target_lang, durati
     final_json = merge_json_with_offset(results, AUDIO_CHUNKING_OFFSET)
     return final_json
 
-def transcribe_with_gemini(audio_path, source_lang, target_lang, duration, reference_passage=None):
+def transcribe_with_gemini(audio_path, source_lang, target_lang, duration, reference_passage=None, slow_audio=False, speed_factor=0.5):
     source_script = find_script(source_lang)
     print("Duration   :  ", duration, AUDIO_CHUNKING_OFFSET)
     if duration <= AUDIO_CHUNKING_OFFSET:
-        idx, transcription = transcribe_chunk(0, audio_path, source_lang, source_script, target_lang, reference_passage)
+        idx, transcription = transcribe_chunk(0, audio_path, source_lang, source_script, target_lang, reference_passage, slow_audio, speed_factor)
         return transcription
     else:
         print(f"audio path in transcribe_with_gemini is is {audio_path}")
-        transcription = transcribe_chunks(audio_path, source_lang, source_script, target_lang, duration, reference_passage)
+        transcription = transcribe_chunks(audio_path, source_lang, source_script, target_lang, duration, reference_passage, slow_audio, speed_factor)
         return transcription
 
-def get_segments(audio_path, source_lang, target_lang, reference_passage=None):
+def get_segments(audio_path, source_lang, target_lang, reference_passage=None, slow_audio=False, speed_factor=0.5):
     all_segments = []
     
     # Get the audio file length in seconds using pydub
     audio = AudioSegment.from_file(audio_path)
     audio_length = len(audio) / 1000.0
 
-    all_segments = transcribe_with_gemini(audio_path, source_lang, target_lang, audio_length, reference_passage)
+    all_segments = transcribe_with_gemini(audio_path, source_lang, target_lang, audio_length, reference_passage, slow_audio, speed_factor)
 
     return all_segments
 
@@ -438,7 +777,7 @@ def format_timestamp_precise(seconds):
     secs = seconds % 60
     return f"{hours}:{minutes:02d}:{secs:09.6f}"
 
-def process_diarization(audio_path, output_json, source_lang, target_lang, reference_passage=None):
+def process_diarization(audio_path, output_json, source_lang, target_lang, reference_passage=None, slow_audio=False, speed_factor=0.5):
     """
     Process audio file for word-level transcription with precise timestamps.
     
@@ -450,12 +789,17 @@ def process_diarization(audio_path, output_json, source_lang, target_lang, refer
         reference_passage: Optional reference text that corresponds to the audio.
                           This helps with spelling and context but transcription
                           will prioritize what is actually spoken.
+        slow_audio: Whether to slow down audio by speed_factor for more precise timestamps (default: True)
+        speed_factor: Speed factor for slowing audio (0.5 = half speed, default: 0.5)
     """
     # Get the audio file length to validate timestamps
     audio = AudioSegment.from_file(audio_path)
     audio_duration = len(audio) / 1000.0  # Convert to seconds
     
-    all_words = get_segments(audio_path, source_lang, target_lang, reference_passage)
+    if slow_audio:
+        print(f"🎵 Audio will be slowed by {speed_factor}x for more precise word-level timestamps")
+    
+    all_words = get_segments(audio_path, source_lang, target_lang, reference_passage, slow_audio, speed_factor)
 
     # Extract filename and ID from audio path
     audio_filename = os.path.basename(audio_path)

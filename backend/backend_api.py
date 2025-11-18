@@ -245,6 +245,7 @@ def transcribe_audio():
             'audio_duration': audio_duration,
             'total_words': len(simplified_words),
             'metadata': {
+                'filename': filename,  # Original filename for renaming
                 'audio_path': f"/api/audio/{unique_filename}"
             }
         }
@@ -611,7 +612,7 @@ def transcribe_phrases():
             'audio_duration': audio_duration,
             'total_phrases': len(processed_phrases),
             'metadata': {
-                'filename': filename,
+                'filename': filename,  # Original filename for renaming
                 'audio_path': f"/api/audio/{unique_filename}"
             }
         }
