@@ -5,6 +5,33 @@ import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/Aud
 
 const API_BASE_URL = 'http://localhost:5001';
 
+// Helper function to get user_id from localStorage
+const getUserId = (): string | null => {
+  try {
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      const user = JSON.parse(userStr);
+      return user.sub || user.id || null; // Google OAuth uses 'sub' as the unique user ID
+    }
+  } catch (error) {
+    console.error('Error getting user ID:', error);
+  }
+  return null;
+};
+
+// Helper function to get axios config with user_id header
+const getAxiosConfig = () => {
+  const userId = getUserId();
+  if (!userId) {
+    throw new Error('User not authenticated. Please sign in again.');
+  }
+  return {
+    headers: {
+      'X-User-ID': userId
+    }
+  };
+};
+
 interface Word {
   start: string;
   end: string;
@@ -104,7 +131,8 @@ function SavedTranscriptions() {
   const fetchTranscriptions = async () => {
     setLoading(true);
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/transcriptions`);
+      const config = getAxiosConfig();
+      const response = await axios.get(`${API_BASE_URL}/api/transcriptions`, config);
       if (response.data.success) {
         setTranscriptions(response.data.data.transcriptions || []);
       } else {
@@ -121,7 +149,8 @@ function SavedTranscriptions() {
   const fetchTranscriptionDetails = async (id: string) => {
     setLoadingDetails(true);
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/transcriptions/${id}`);
+      const config = getAxiosConfig();
+      const response = await axios.get(`${API_BASE_URL}/api/transcriptions/${id}`, config);
       if (response.data.success) {
         const doc = response.data.data;
         setSelectedTranscription(doc);
@@ -353,11 +382,13 @@ function SavedTranscriptions() {
 
     setSaving(true);
     try {
+      const config = getAxiosConfig();
       const response = await axios.put(
         `${API_BASE_URL}/api/transcriptions/${selectedTranscription._id}`,
         {
           transcription_data: selectedTranscription.transcription_data,
-        }
+        },
+        config
       );
 
       if (response.data.success) {
@@ -379,12 +410,65 @@ function SavedTranscriptions() {
   const downloadTranscription = () => {
     if (!selectedTranscription) return;
 
-    const dataStr = JSON.stringify(selectedTranscription, null, 2);
+    const transcriptionData = selectedTranscription.transcription_data;
+    const file_name = transcriptionData.metadata?.filename || 'audio.mp3';
+    
+    // Convert MongoDB _id to numeric ID (extract numeric part or use timestamp)
+    let id: number;
+    try {
+      // Try to extract numeric part from _id, or use timestamp
+      const idStr = selectedTranscription._id;
+      // If _id is a MongoDB ObjectId, use timestamp part, otherwise try to parse
+      if (idStr.length === 24) {
+        // MongoDB ObjectId - extract timestamp (first 8 hex chars)
+        id = parseInt(idStr.substring(0, 8), 16);
+      } else {
+        // Try to parse as number, or use current timestamp
+        id = parseInt(idStr) || Date.now();
+      }
+    } catch {
+      id = Date.now();
+    }
+
+    // Transform annotations based on transcription type
+    let annotations: Array<{ start: string; end: string; Transcription: string[] }>;
+    
+    if (transcriptionData.transcription_type === 'words' && transcriptionData.words) {
+      annotations = transcriptionData.words.map((word: Word) => ({
+        start: word.start,
+        end: word.end,
+        Transcription: [word.word]
+      }));
+    } else if (transcriptionData.transcription_type === 'phrases' && transcriptionData.phrases) {
+      annotations = transcriptionData.phrases.map((phrase: Phrase) => ({
+        start: phrase.start,
+        end: phrase.end,
+        Transcription: [phrase.text]
+      }));
+    } else {
+      annotations = [];
+    }
+
+    // Create output in exact format and order
+    const outputData = {
+      id: id,
+      file_name: file_name,
+      annotations: annotations
+    };
+
+    const dataStr = JSON.stringify(outputData, null, 2);
     const dataBlob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(dataBlob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `transcription_${selectedTranscription._id}.json`;
+    
+    // Get filename from metadata, sanitize it, and ensure .json extension
+    const filename = file_name;
+    // Remove invalid filename characters and ensure it ends with .json
+    const sanitizedFilename = filename.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_');
+    const finalFilename = sanitizedFilename.endsWith('.json') ? sanitizedFilename : `${sanitizedFilename}.json`;
+    
+    link.download = finalFilename;
     link.click();
   };
 
@@ -408,11 +492,13 @@ function SavedTranscriptions() {
         }
       };
 
+      const config = getAxiosConfig();
       const response = await axios.put(
         `${API_BASE_URL}/api/transcriptions/${selectedTranscription._id}`,
         {
           transcription_data: updatedTranscription.transcription_data,
-        }
+        },
+        config
       );
 
       if (response.data.success) {
@@ -451,7 +537,8 @@ function SavedTranscriptions() {
 
     setDeleting(true);
     try {
-      const response = await axios.delete(`${API_BASE_URL}/api/transcriptions/${id}`);
+      const config = getAxiosConfig();
+      const response = await axios.delete(`${API_BASE_URL}/api/transcriptions/${id}`, config);
 
       if (response.data.success) {
         alert('Transcription deleted successfully!');

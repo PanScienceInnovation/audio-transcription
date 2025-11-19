@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import App from './App';
 import PhrasesApp from './PhrasesApp';
 import { Mic2, MessageSquare, LogOut } from 'lucide-react';
@@ -8,7 +9,8 @@ interface MainAppProps {
 }
 
 function MainApp({ onSignOut }: MainAppProps) {
-  const [currentView, setCurrentView] = useState<'words' | 'phrases'>('words');
+  const location = useLocation();
+  const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
@@ -29,6 +31,9 @@ function MainApp({ onSignOut }: MainAppProps) {
     }
   };
 
+  const isWordLevel = location.pathname.startsWith('/word-level');
+  const isPhraseLevel = location.pathname.startsWith('/phrase-level');
+
   return (
     <div>
       {/* Header with user info and sign out */}
@@ -36,8 +41,8 @@ function MainApp({ onSignOut }: MainAppProps) {
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-1">
             <button
-              onClick={() => setCurrentView('words')}
-              className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${currentView === 'words'
+              onClick={() => navigate('/word-level')}
+              className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${isWordLevel
                   ? 'bg-blue-600 text-white shadow-lg'
                   : 'text-blue-600 hover:bg-blue-50'
                 }`}
@@ -46,8 +51,8 @@ function MainApp({ onSignOut }: MainAppProps) {
               Word-Level
             </button>
             <button
-              onClick={() => setCurrentView('phrases')}
-              className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${currentView === 'phrases'
+              onClick={() => navigate('/phrase-level')}
+              className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${isPhraseLevel
                   ? 'bg-purple-600 text-white shadow-lg'
                   : 'text-purple-600 hover:bg-purple-50'
                 }`}
@@ -86,8 +91,8 @@ function MainApp({ onSignOut }: MainAppProps) {
       </div>
       
       {/* Content */}
-      {currentView === 'words' && <App />}
-      {currentView === 'phrases' && <PhrasesApp />}
+      {isWordLevel && <App />}
+      {isPhraseLevel && <PhrasesApp />}
     </div>
   );
 }

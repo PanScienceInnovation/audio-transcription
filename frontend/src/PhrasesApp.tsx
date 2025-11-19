@@ -5,6 +5,33 @@ import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/Aud
 
 const API_BASE_URL = 'http://localhost:5001';
 
+// Helper function to get user_id from localStorage
+const getUserId = (): string | null => {
+  try {
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      const user = JSON.parse(userStr);
+      return user.sub || user.id || null; // Google OAuth uses 'sub' as the unique user ID
+    }
+  } catch (error) {
+    console.error('Error getting user ID:', error);
+  }
+  return null;
+};
+
+// Helper function to get axios config with user_id header
+const getAxiosConfig = () => {
+  const userId = getUserId();
+  if (!userId) {
+    throw new Error('User not authenticated. Please sign in again.');
+  }
+  return {
+    headers: {
+      'X-User-ID': userId
+    }
+  };
+};
+
 interface Phrase {
   start: string;
   end: string;
@@ -112,7 +139,8 @@ function PhrasesApp() {
   const fetchSavedTranscriptions = async () => {
     setLoadingSaved(true);
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/transcriptions`);
+      const config = getAxiosConfig();
+      const response = await axios.get(`${API_BASE_URL}/api/transcriptions`, config);
       if (response.data.success) {
         const allTranscriptions = response.data.data.transcriptions || [];
         // Filter only 'phrases' type transcriptions
@@ -123,6 +151,11 @@ function PhrasesApp() {
       }
     } catch (error: any) {
       console.error('Error fetching saved transcriptions:', error);
+      // Don't show alert if user is not authenticated (might be loading)
+      if (error.message && error.message.includes('not authenticated')) {
+        // Silently fail - user might not be signed in yet
+        return;
+      }
     } finally {
       setLoadingSaved(false);
     }
@@ -131,7 +164,8 @@ function PhrasesApp() {
   const loadSavedTranscription = async (id: string) => {
     setLoadingSaved(true);
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/transcriptions/${id}`);
+      const config = getAxiosConfig();
+      const response = await axios.get(`${API_BASE_URL}/api/transcriptions/${id}`, config);
       if (response.data.success) {
         const doc: SavedTranscriptionDocument = response.data.data;
         const transcriptionData = doc.transcription_data;
@@ -183,7 +217,8 @@ function PhrasesApp() {
     if (!confirmed) return;
 
     try {
-      const response = await axios.delete(`${API_BASE_URL}/api/transcriptions/${id}`);
+      const config = getAxiosConfig();
+      const response = await axios.delete(`${API_BASE_URL}/api/transcriptions/${id}`, config);
       if (response.data.success) {
         alert('Transcription deleted successfully!');
         fetchSavedTranscriptions();
@@ -409,12 +444,38 @@ function PhrasesApp() {
   const downloadTranscription = () => {
     if (!transcriptionData) return;
 
-    const dataStr = JSON.stringify(transcriptionData, null, 2);
+    const file_name = transcriptionData.metadata?.filename || 'audio.mp3';
+    
+    // Generate numeric ID (use timestamp)
+    const id = Date.now();
+
+    // Transform phrases to annotations format
+    const annotations = transcriptionData.phrases.map((phrase: Phrase) => ({
+      start: phrase.start,
+      end: phrase.end,
+      Transcription: [phrase.text]
+    }));
+
+    // Create output in exact format and order
+    const outputData = {
+      id: id,
+      file_name: file_name,
+      annotations: annotations
+    };
+
+    const dataStr = JSON.stringify(outputData, null, 2);
     const dataBlob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(dataBlob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `phrases_transcription_${Date.now()}.json`;
+    
+    // Get filename from metadata, sanitize it, and ensure .json extension
+    const filename = file_name;
+    // Remove invalid filename characters and ensure it ends with .json
+    const sanitizedFilename = filename.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_');
+    const finalFilename = sanitizedFilename.endsWith('.json') ? sanitizedFilename : `${sanitizedFilename}.json`;
+    
+    link.download = finalFilename;
     link.click();
   };
 
@@ -463,10 +524,17 @@ function PhrasesApp() {
         }
       };
 
+      const userId = getUserId();
+      if (!userId) {
+        alert('User not authenticated. Please sign in again.');
+        return;
+      }
+
       const saveData = {
         audio_path: audioPath,
         audio_filename: audioFilename,
-        transcription_data: transcriptionDataToSave
+        transcription_data: transcriptionDataToSave,
+        user_id: userId
       };
 
       const response = await axios.post(
@@ -475,7 +543,7 @@ function PhrasesApp() {
       );
 
       if (response.data.success) {
-        alert(`Successfully saved to database!\nMongoDB ID: ${response.data.mongodb_id}\nS3 URL: ${response.data.s3_metadata?.url || 'N/A'}`);
+        alert(`Successfully saved to database!`);
         fetchSavedTranscriptions(); // Refresh the saved transcriptions list
       } else {
         alert(`Error: ${response.data.error}`);

@@ -789,7 +789,7 @@ def process_diarization(audio_path, output_json, source_lang, target_lang, refer
         reference_passage: Optional reference text that corresponds to the audio.
                           This helps with spelling and context but transcription
                           will prioritize what is actually spoken.
-        slow_audio: Whether to slow down audio by speed_factor for more precise timestamps (default: True)
+        slow_audio: Whether to slow down audio by speed_factor for more precise timestamps (default: False)
         speed_factor: Speed factor for slowing audio (0.5 = half speed, default: 0.5)
     """
     # Get the audio file length to validate timestamps
@@ -912,14 +912,16 @@ if __name__ == "__main__":
     audio_dir = os.path.dirname(test_audio_path) or "."
     output_dir = os.path.join(audio_dir, "transcriptions")
     ensure_dir(output_dir)
-    test_output_json = os.path.join(output_dir, f"{Path(test_audio_path).stem}_word_transcription.json")
+    # Use parent folder name (the number) as the JSON filename
+    parent_folder_name = os.path.basename(audio_dir)
+    test_output_json = os.path.join(output_dir, f"{parent_folder_name}.json")
     
     try:
         start_time = time.time()
         print(f"\n{'='*100}")
         print(f"Processing Gujarati Audio: {test_audio_path}")
         print(f"Source Language: {source_lang}")
-        print(f"Output: {test_output_json}")
+        # print(f"Output: {test_output_json}")
         print(f"{'='*100}\n")
         
         result = process_diarization(

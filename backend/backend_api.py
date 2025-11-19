@@ -649,6 +649,10 @@ def save_to_database():
         - audio_filename: Filename of the audio file (from metadata.audio_path)
         - transcription_data: Complete transcription data (words/phrases, metadata, etc.)
         - transcription_type: Type of transcription ('words' or 'phrases')
+        - user_id: User ID (from Google OAuth, typically the 'sub' field)
+    
+    Headers:
+        - X-User-ID: User ID (alternative to JSON body)
     """
     try:
         data = request.get_json()
@@ -657,6 +661,15 @@ def save_to_database():
             return jsonify({
                 'success': False,
                 'error': 'No data provided'
+            }), 400
+        
+        # Get user_id from request body or headers
+        user_id = data.get('user_id') or request.headers.get('X-User-ID')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id is required. Please provide it in the request body or X-User-ID header.'
             }), 400
         
         # Extract audio filename from audio_path or use provided filename
@@ -695,7 +708,8 @@ def save_to_database():
         result = storage_manager.save_transcription(
             local_audio_path=local_audio_path,
             transcription_data=transcription_data,
-            original_filename=audio_filename
+            original_filename=audio_filename,
+            user_id=user_id
         )
         
         if result['success']:
@@ -727,17 +741,29 @@ def save_to_database():
 @app.route('/api/transcriptions', methods=['GET'])
 def list_transcriptions():
     """
-    List all saved transcriptions from MongoDB.
+    List saved transcriptions from MongoDB for the authenticated user.
     
     Query Parameters:
         - limit: Maximum number of results (default: 100)
         - skip: Number of results to skip (default: 0)
+    
+    Headers:
+        - X-User-ID: User ID (required)
     """
     try:
+        # Get user_id from headers
+        user_id = request.headers.get('X-User-ID')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id is required. Please provide it in the X-User-ID header.'
+            }), 400
+        
         limit = int(request.args.get('limit', 100))
         skip = int(request.args.get('skip', 0))
         
-        result = storage_manager.list_transcriptions(limit=limit, skip=skip)
+        result = storage_manager.list_transcriptions(limit=limit, skip=skip, user_id=user_id)
         
         if result['success']:
             return jsonify({
@@ -765,9 +791,21 @@ def list_transcriptions():
 def get_transcription_by_id(transcription_id):
     """
     Get a single transcription by MongoDB document ID.
+    
+    Headers:
+        - X-User-ID: User ID (required)
     """
     try:
-        document = storage_manager.get_transcription(transcription_id)
+        # Get user_id from headers
+        user_id = request.headers.get('X-User-ID')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id is required. Please provide it in the X-User-ID header.'
+            }), 400
+        
+        document = storage_manager.get_transcription(transcription_id, user_id=user_id)
         
         if document:
             return jsonify({
@@ -777,7 +815,7 @@ def get_transcription_by_id(transcription_id):
         else:
             return jsonify({
                 'success': False,
-                'error': 'Transcription not found'
+                'error': 'Transcription not found or you do not have permission to access it'
             }), 404
     
     except Exception as e:
@@ -798,8 +836,20 @@ def update_transcription_by_id(transcription_id):
     
     JSON Body:
         - transcription_data: Updated transcription data
+    
+    Headers:
+        - X-User-ID: User ID (required)
     """
     try:
+        # Get user_id from headers
+        user_id = request.headers.get('X-User-ID')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id is required. Please provide it in the X-User-ID header.'
+            }), 400
+        
         data = request.get_json()
         
         if not data or 'transcription_data' not in data:
@@ -810,7 +860,7 @@ def update_transcription_by_id(transcription_id):
         
         transcription_data = data['transcription_data']
         
-        result = storage_manager.update_transcription(transcription_id, transcription_data)
+        result = storage_manager.update_transcription(transcription_id, transcription_data, user_id=user_id)
         
         if result['success']:
             return jsonify({
@@ -839,9 +889,21 @@ def update_transcription_by_id(transcription_id):
 def delete_transcription_by_id(transcription_id):
     """
     Delete a transcription from MongoDB.
+    
+    Headers:
+        - X-User-ID: User ID (required)
     """
     try:
-        result = storage_manager.delete_transcription(transcription_id)
+        # Get user_id from headers
+        user_id = request.headers.get('X-User-ID')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id is required. Please provide it in the X-User-ID header.'
+            }), 400
+        
+        result = storage_manager.delete_transcription(transcription_id, user_id=user_id)
         
         if result['success']:
             return jsonify({
