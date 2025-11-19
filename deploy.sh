@@ -104,7 +104,7 @@ check_required_files() {
 
 # Function to stop existing containers
 stop_existing_containers() {
-    print_info "Stopping existing containers..."
+    print_info "Bringing down containers..."
     
     # Use docker compose if available, otherwise docker-compose
     if docker compose version >/dev/null 2>&1; then
@@ -120,7 +120,7 @@ stop_existing_containers() {
         docker rm "${CONTAINER_NAME}" 2>/dev/null || true
     fi
     
-    print_success "Existing containers stopped"
+    print_success "Containers brought down"
 }
 
 # Function to build Docker image
@@ -256,17 +256,21 @@ main() {
         esac
     done
     
-    # Run deployment steps
+    # Run deployment steps in order: down -> build -> up
     check_prerequisites
     check_required_files
+    
+    # Step 1: Bring down existing containers
     stop_existing_containers
     
+    # Step 2: Build Docker image
     if [ "$SKIP_BUILD" = false ]; then
         build_image
     else
         print_warning "Skipping build step"
     fi
     
+    # Step 3: Start containers
     start_containers
     
     if [ "$SKIP_HEALTH_CHECK" = false ]; then
