@@ -474,6 +474,16 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
               }
               return;
             }
+            case 'Enter': {
+              // Enter: play the selected word segment
+              event.preventDefault();
+              if (waveSurferRef.current && currentRegionRef.current) {
+                const regionStart = currentRegionRef.current.start;
+                const regionEnd = currentRegionRef.current.end;
+                waveSurferRef.current.play(regionStart, regionEnd);
+              }
+              return;
+            }
           }
         }
 
@@ -551,7 +561,7 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
               <div className="text-xs text-gray-600 bg-blue-50 px-2 py-1 rounded border border-blue-200">
                 <span className="font-semibold">Selected: </span>
                 <span className="font-mono">{selectedWord.word}</span>
-                <span className="ml-2 text-gray-500">←/→ adjust start (1ms) | Shift+←/→ adjust end (1ms)</span>
+                {/* <span className="ml-2 text-gray-500">←/→ adjust start (1ms) | Shift+←/→ adjust end (1ms) | Enter to play</span> */}
               </div>
             )}
           </div>

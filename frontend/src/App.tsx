@@ -1190,7 +1190,7 @@ function App() {
               </div>
               <p className="text-sm text-gray-600 mb-4">
                 Click on any word to play audio segment and display it in the waveform. 
-                Use arrow keys to adjust times (1ms steps): ←/→ for start time, Shift+←/→ for end time.
+                Use arrow keys to adjust times (1ms steps): ←/→ for start time, Shift+←/→ for end time. Enter to play.
               </p>
               
               {/* Add Word Form */}
