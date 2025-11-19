@@ -1,5 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import WaveSurfer from 'wavesurfer.js';
+import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions';
 import { Pause, Play, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 
 export interface AudioWaveformPlayerHandle {
@@ -11,6 +12,13 @@ export interface AudioWaveformPlayerHandle {
   getDuration: () => number;
 }
 
+interface SelectedWord {
+  word: string;
+  start: number;
+  end: number;
+  index: number;
+}
+
 interface AudioWaveformPlayerProps {
   audioUrl: string;
   onTimeUpdate?: (time: number) => void;
@@ -19,6 +27,8 @@ interface AudioWaveformPlayerProps {
   onPlay?: () => void;
   onPause?: () => void;
   height?: number;
+  selectedWord?: SelectedWord | null;
+  onWordTimeUpdate?: (index: number, start: number, end: number) => void;
 }
 
 const formatTime = (time: number): string => {
@@ -43,10 +53,14 @@ const formatTime = (time: number): string => {
 };
 
 const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformPlayerProps>(
-  ({ audioUrl, onTimeUpdate, onReady, onEnded, onPlay, onPause, height = 150 }, ref) => {
+  ({ audioUrl, onTimeUpdate, onReady, onEnded, onPlay, onPause, height = 150, selectedWord, onWordTimeUpdate }, ref) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const audioElementRef = useRef<HTMLAudioElement | null>(null);
     const waveSurferRef = useRef<WaveSurfer | null>(null);
+    const regionsRef = useRef<RegionsPlugin | null>(null);
+    const currentRegionRef = useRef<any>(null);
+    const selectedWordIndexRef = useRef<number | null>(null);
+    const isUpdatingFromRegionRef = useRef(false);
     const [isReady, setIsReady] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
@@ -63,11 +77,12 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
       onEnded?: () => void;
       onPlay?: () => void;
       onPause?: () => void;
+      onWordTimeUpdate?: (index: number, start: number, end: number) => void;
     }>({});
 
     useEffect(() => {
-      callbacksRef.current = { onTimeUpdate, onReady, onEnded, onPlay, onPause };
-    }, [onTimeUpdate, onReady, onEnded, onPlay, onPause]);
+      callbacksRef.current = { onTimeUpdate, onReady, onEnded, onPlay, onPause, onWordTimeUpdate };
+    }, [onTimeUpdate, onReady, onEnded, onPlay, onPause, onWordTimeUpdate]);
 
     // Keep zoomLevelRef in sync with zoomLevel
     useEffect(() => {
@@ -75,6 +90,11 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
     }, [zoomLevel]);
 
     const teardownWaveSurfer = useCallback(() => {
+      if (currentRegionRef.current) {
+        currentRegionRef.current.remove();
+        currentRegionRef.current = null;
+      }
+      regionsRef.current = null;
       waveSurferRef.current?.destroy();
       waveSurferRef.current = null;
       setIsReady(false);
@@ -173,6 +193,10 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
 
       waveSurferRef.current = waveSurfer;
 
+      // Initialize regions plugin
+      const regions = waveSurfer.registerPlugin(RegionsPlugin.create());
+      regionsRef.current = regions;
+
       waveSurfer.on('ready', () => {
         const audioDuration = waveSurfer.getDuration();
         if (Number.isFinite(audioDuration) && audioDuration > 0) {
@@ -226,6 +250,101 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
         }
       });
     }, [zoomLevel, isReady]);
+
+    // Handle selected word region
+    useEffect(() => {
+      if (!waveSurferRef.current || !regionsRef.current || !isReady) return;
+      if (!selectedWord) {
+        // Remove existing region if no word is selected
+        if (currentRegionRef.current) {
+          currentRegionRef.current.remove();
+          currentRegionRef.current = null;
+        }
+        selectedWordIndexRef.current = null;
+        return;
+      }
+
+      const duration = waveSurferRef.current.getDuration();
+      const start = Math.max(0, Math.min(selectedWord.start, duration));
+      const end = Math.max(start, Math.min(selectedWord.end, duration));
+
+      // If the same word is selected, just update the region position
+      if (currentRegionRef.current && selectedWordIndexRef.current === selectedWord.index) {
+        // Only update if the times actually changed (and not from a region drag)
+        if (!isUpdatingFromRegionRef.current) {
+          const currentStart = currentRegionRef.current.start;
+          const currentEnd = currentRegionRef.current.end;
+          if (Math.abs(currentStart - start) > 0.001 || Math.abs(currentEnd - end) > 0.001) {
+            currentRegionRef.current.setOptions({ start, end });
+          }
+        }
+        return;
+      }
+
+      // Remove existing region if any
+      if (currentRegionRef.current) {
+        currentRegionRef.current.remove();
+        currentRegionRef.current = null;
+      }
+
+      // Create new region for selected word
+      const region = regionsRef.current.addRegion({
+        start,
+        end,
+        color: 'rgba(59, 130, 246, 0.3)', // blue with transparency
+        drag: true,
+        resize: true,
+        content: selectedWord.word,
+        contentEditable: false,
+      });
+
+      currentRegionRef.current = region;
+      selectedWordIndexRef.current = selectedWord.index;
+
+      // Handle region updates
+      const handleUpdate = () => {
+        if (region && callbacksRef.current.onWordTimeUpdate) {
+          isUpdatingFromRegionRef.current = true;
+          const newStart = region.start;
+          const newEnd = region.end;
+          callbacksRef.current.onWordTimeUpdate(selectedWord.index, newStart, newEnd);
+          // Reset flag after a short delay to allow state updates to complete
+          setTimeout(() => {
+            isUpdatingFromRegionRef.current = false;
+          }, 100);
+        }
+      };
+
+      region.on('update-end', handleUpdate);
+
+      // Scroll to region
+      requestAnimationFrame(() => {
+        try {
+          const regionElement = region.element;
+          if (regionElement && containerRef.current) {
+            const container = containerRef.current.closest('.overflow-x-auto');
+            if (container) {
+              const regionLeft = regionElement.offsetLeft;
+              const containerWidth = container.clientWidth;
+              const scrollLeft = container.scrollLeft;
+              const regionCenter = regionLeft - containerWidth / 2 + regionElement.offsetWidth / 2;
+              container.scrollTo({
+                left: scrollLeft + regionCenter,
+                behavior: 'smooth',
+              });
+            }
+          }
+        } catch (error) {
+          console.debug('Error scrolling to region:', error);
+        }
+      });
+
+      return () => {
+        if (region) {
+          region.un('update-end', handleUpdate);
+        }
+      };
+    }, [selectedWord, isReady]);
 
     useImperativeHandle(
       ref,
@@ -290,6 +409,75 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
         // Only handle keys when audio is ready
         if (!isReady || !waveSurferRef.current) return;
 
+        // Handle word time adjustment when a word is selected
+        if (selectedWord && currentRegionRef.current) {
+          const TIME_STEP = 0.001; // 1ms for both normal and shift
+          const duration = waveSurferRef.current.getDuration();
+          let newStart = currentRegionRef.current.start;
+          let newEnd = currentRegionRef.current.end;
+
+          switch (event.key) {
+            case 'ArrowLeft': {
+              if (event.shiftKey) {
+                // Shift + Left: decrease end time
+                event.preventDefault();
+                newEnd = Math.max(newStart, newEnd - TIME_STEP);
+                currentRegionRef.current.setOptions({ end: newEnd });
+                if (callbacksRef.current.onWordTimeUpdate) {
+                  isUpdatingFromRegionRef.current = true;
+                  callbacksRef.current.onWordTimeUpdate(selectedWord.index, newStart, newEnd);
+                  setTimeout(() => {
+                    isUpdatingFromRegionRef.current = false;
+                  }, 50);
+                }
+              } else {
+                // Left: decrease start time
+                event.preventDefault();
+                newStart = Math.max(0, newStart - TIME_STEP);
+                newStart = Math.min(newStart, newEnd - 0.001); // Ensure start < end
+                currentRegionRef.current.setOptions({ start: newStart });
+                if (callbacksRef.current.onWordTimeUpdate) {
+                  isUpdatingFromRegionRef.current = true;
+                  callbacksRef.current.onWordTimeUpdate(selectedWord.index, newStart, newEnd);
+                  setTimeout(() => {
+                    isUpdatingFromRegionRef.current = false;
+                  }, 50);
+                }
+              }
+              return;
+            }
+            case 'ArrowRight': {
+              if (event.shiftKey) {
+                // Shift + Right: increase end time
+                event.preventDefault();
+                newEnd = Math.min(duration, newEnd + TIME_STEP);
+                currentRegionRef.current.setOptions({ end: newEnd });
+                if (callbacksRef.current.onWordTimeUpdate) {
+                  isUpdatingFromRegionRef.current = true;
+                  callbacksRef.current.onWordTimeUpdate(selectedWord.index, newStart, newEnd);
+                  setTimeout(() => {
+                    isUpdatingFromRegionRef.current = false;
+                  }, 50);
+                }
+              } else {
+                // Right: increase start time
+                event.preventDefault();
+                newStart = Math.min(newEnd - 0.001, newStart + TIME_STEP);
+                currentRegionRef.current.setOptions({ start: newStart });
+                if (callbacksRef.current.onWordTimeUpdate) {
+                  isUpdatingFromRegionRef.current = true;
+                  callbacksRef.current.onWordTimeUpdate(selectedWord.index, newStart, newEnd);
+                  setTimeout(() => {
+                    isUpdatingFromRegionRef.current = false;
+                  }, 50);
+                }
+              }
+              return;
+            }
+          }
+        }
+
+        // Handle general audio controls
         switch (event.key) {
           case ' ': {
             // Space bar: toggle play/pause
@@ -302,20 +490,24 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
             break;
           }
           case 'ArrowRight': {
-            // Left arrow: forward by 10 milliseconds
-            event.preventDefault();
-            const currentTime = waveSurferRef.current.getCurrentTime();
-            const duration = waveSurferRef.current.getDuration();
-            const newTime = Math.min(currentTime + 0.001, duration);
-            waveSurferRef.current.setTime(newTime);
+            // Right arrow: forward by 1 millisecond (only if no word selected)
+            if (!selectedWord) {
+              event.preventDefault();
+              const currentTime = waveSurferRef.current.getCurrentTime();
+              const duration = waveSurferRef.current.getDuration();
+              const newTime = Math.min(currentTime + 0.001, duration);
+              waveSurferRef.current.setTime(newTime);
+            }
             break;
           }
           case 'ArrowLeft': {
-            // Right arrow: backward by 10 milliseconds
-            event.preventDefault();
-            const currentTime = waveSurferRef.current.getCurrentTime();
-            const newTime = Math.max(currentTime - 0.001, 0);
-            waveSurferRef.current.setTime(newTime);
+            // Left arrow: backward by 1 millisecond (only if no word selected)
+            if (!selectedWord) {
+              event.preventDefault();
+              const currentTime = waveSurferRef.current.getCurrentTime();
+              const newTime = Math.max(currentTime - 0.001, 0);
+              waveSurferRef.current.setTime(newTime);
+            }
             break;
           }
         }
@@ -326,7 +518,7 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
       return () => {
         window.removeEventListener('keydown', handleKeyDown);
       };
-    }, [isReady, isPlaying]);
+    }, [isReady, isPlaying, selectedWord]);
 
     return (
       <div className="border border-blue-100 rounded-lg p-4 bg-gradient-to-br from-white to-blue-50 shadow-inner">
@@ -355,7 +547,13 @@ const AudioWaveformPlayer = forwardRef<AudioWaveformPlayerHandle, AudioWaveformP
         </div>
         <div className="flex items-center justify-between gap-2 mb-2">
           <div className="flex items-center gap-1">
-            {/* <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Zoom Controls</span> */}
+            {selectedWord && (
+              <div className="text-xs text-gray-600 bg-blue-50 px-2 py-1 rounded border border-blue-200">
+                <span className="font-semibold">Selected: </span>
+                <span className="font-mono">{selectedWord.word}</span>
+                <span className="ml-2 text-gray-500">←/→ adjust start (1ms) | Shift+←/→ adjust end (1ms)</span>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-1">
             <button

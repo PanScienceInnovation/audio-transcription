@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, ChevronDown, ChevronUp, Edit, FolderOpen, Trash2 } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, ChevronDown, ChevronUp, Edit, FolderOpen, Trash2, Plus } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 // Helper function to get user_id from localStorage
 const getUserId = (): string | null => {
@@ -108,12 +108,20 @@ function App() {
     word: '',
   });
   const [hasChanges, setHasChanges] = useState(false);
+  const [selectedWordIndex, setSelectedWordIndex] = useState<number | null>(null);
   const [savingToDatabase, setSavingToDatabase] = useState(false);
+  const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
   const [isUploadFormExpanded, setIsUploadFormExpanded] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newFilename, setNewFilename] = useState('');
   const [savedTranscriptions, setSavedTranscriptions] = useState<SavedTranscriptionSummary[]>([]);
   const [loadingSaved, setLoadingSaved] = useState(false);
+  const [isAddingWord, setIsAddingWord] = useState(false);
+  const [newWordValues, setNewWordValues] = useState<{ start: string; end: string; word: string }>({
+    start: '',
+    end: '',
+    word: '',
+  });
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -127,6 +135,21 @@ function App() {
       return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
     }
     return parseFloat(timeStr);
+  };
+
+  const secondsToTimeString = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    const milliseconds = Math.floor((secs % 1) * 1000);
+    const secsInt = Math.floor(secs);
+
+    const pad = (value: number, digits: number) => value.toString().padStart(digits, '0');
+
+    if (hours > 0) {
+      return `${hours}:${pad(minutes, 2)}:${pad(secsInt, 2)}.${pad(milliseconds, 3)}`;
+    }
+    return `${minutes}:${pad(secsInt, 2)}.${pad(milliseconds, 3)}`;
   };
 
   const wordTimings = useMemo(() => {
@@ -193,6 +216,7 @@ function App() {
           };
 
           setTranscriptionData(loadedData);
+          setCurrentTranscriptionId(doc._id);
 
           // Set audio URL using proxy endpoint
           if (doc.s3_metadata?.url) {
@@ -306,6 +330,7 @@ function App() {
           };
         }
         setTranscriptionData(data);
+        setCurrentTranscriptionId(null); // New transcription, no ID yet
         if (data.metadata?.audio_path) {
           setAudioUrl(`${API_BASE_URL}${data.metadata.audio_path}`);
         }
@@ -328,8 +353,31 @@ function App() {
     const endTime = timeToSeconds(word.end);
 
     setCurrentPlayingIndex(index);
+    setSelectedWordIndex(index);
     playerRef.current.playSegment(startTime, endTime);
   };
+
+  const handleWordTimeUpdate = useCallback(
+    (index: number, start: number, end: number) => {
+      if (!transcriptionData) return;
+
+      const updatedWords = [...transcriptionData.words];
+      updatedWords[index] = {
+        ...updatedWords[index],
+        start: secondsToTimeString(start),
+        end: secondsToTimeString(end),
+        duration: end - start,
+      };
+
+      setTranscriptionData({
+        ...transcriptionData,
+        words: updatedWords,
+      });
+
+      setHasChanges(true);
+    },
+    [transcriptionData],
+  );
 
   const handlePlayerTimeUpdate = useCallback(
     (current: number) => {
@@ -371,6 +419,127 @@ function App() {
     setEditValues({ start: '', end: '', word: '' });
   };
 
+  const startAddWord = () => {
+    setIsAddingWord(true);
+    setNewWordValues({ start: '', end: '', word: '' });
+  };
+
+  const cancelAddWord = () => {
+    setIsAddingWord(false);
+    setNewWordValues({ start: '', end: '', word: '' });
+  };
+
+  const addWord = () => {
+    if (!transcriptionData) return;
+
+    const startTime = newWordValues.start.trim();
+    const endTime = newWordValues.end.trim();
+    const wordText = newWordValues.word.trim();
+
+    if (!startTime || !endTime || !wordText) {
+      alert('Please fill in all fields (word, start time, end time)');
+      return;
+    }
+
+    // Validate time format and values
+    const startSeconds = timeToSeconds(startTime);
+    const endSeconds = timeToSeconds(endTime);
+
+    if (isNaN(startSeconds) || isNaN(endSeconds)) {
+      alert('Invalid time format. Please use format: MM:SS.mmm or H:MM:SS.mmm');
+      return;
+    }
+
+    if (startSeconds >= endSeconds) {
+      alert('Start time must be less than end time');
+      return;
+    }
+
+    if (startSeconds < 0 || endSeconds > transcriptionData.audio_duration) {
+      alert(`Times must be between 0 and ${transcriptionData.audio_duration.toFixed(3)} seconds`);
+      return;
+    }
+
+    // Create new word
+    const newWord: Word = {
+      start: startTime,
+      end: endTime,
+      word: wordText,
+      duration: endSeconds - startSeconds,
+      language: transcriptionData.language,
+    };
+
+    // Insert word at the correct position based on start time
+    const updatedWords = [...transcriptionData.words];
+    let insertIndex = updatedWords.length;
+    
+    for (let i = 0; i < updatedWords.length; i++) {
+      const wordStart = timeToSeconds(updatedWords[i].start);
+      if (startSeconds < wordStart) {
+        insertIndex = i;
+        break;
+      }
+    }
+
+    updatedWords.splice(insertIndex, 0, newWord);
+
+    setTranscriptionData({
+      ...transcriptionData,
+      words: updatedWords,
+      total_words: updatedWords.length,
+    });
+
+    setIsAddingWord(false);
+    setNewWordValues({ start: '', end: '', word: '' });
+    setHasChanges(true);
+  };
+
+  const deleteWord = (index: number) => {
+    if (!transcriptionData) return;
+
+    const word = transcriptionData.words[index];
+    const confirmed = window.confirm(
+      `Are you sure you want to delete the word "${word.word}"?\n\n` +
+      `Time: ${word.start} - ${word.end}\n\n` +
+      'This action cannot be undone.'
+    );
+
+    if (!confirmed) return;
+
+    const updatedWords = transcriptionData.words.filter((_, i) => i !== index);
+
+    // Clear selection/editing if the deleted word was selected/being edited
+    if (selectedWordIndex === index) {
+      setSelectedWordIndex(null);
+    } else if (selectedWordIndex !== null && selectedWordIndex > index) {
+      // Adjust selected index if a word before it was deleted
+      setSelectedWordIndex(selectedWordIndex - 1);
+    }
+
+    if (editingIndex === index) {
+      setEditingIndex(null);
+      setEditValues({ start: '', end: '', word: '' });
+    } else if (editingIndex !== null && editingIndex > index) {
+      // Adjust editing index if a word before it was deleted
+      setEditingIndex(editingIndex - 1);
+    }
+
+    if (currentPlayingIndex === index) {
+      setCurrentPlayingIndex(null);
+    } else if (currentPlayingIndex !== null && currentPlayingIndex > index) {
+      // Adjust playing index if a word before it was deleted
+      setCurrentPlayingIndex(currentPlayingIndex - 1);
+    }
+
+    setTranscriptionData({
+      ...transcriptionData,
+      words: updatedWords,
+      total_words: updatedWords.length,
+    });
+
+    setHasChanges(true);
+  };
+
   const saveEdit = () => {
     if (editingIndex === null || !transcriptionData) return;
 
@@ -395,27 +564,86 @@ function App() {
   const saveChanges = async () => {
     if (!transcriptionData) return;
 
+    setSavingToDatabase(true);
+
     try {
-      const filename = transcriptionData.metadata?.filename || 'transcription.json';
-      const saveData = {
-        filename: `${Date.now()}_${filename}_edited.json`,
+      // Extract audio filename from audio_path
+      const audioPath = transcriptionData.metadata?.audio_path || transcriptionData.audio_path || '';
+      const audioFilename = audioPath.split('/').pop() || '';
+      
+      // Use renamed filename if available, otherwise use original
+      const finalFilename = transcriptionData.metadata?.filename || audioFilename;
+
+      // Prepare transcription data
+      const transcriptionDataToSave = {
         words: transcriptionData.words,
         language: transcriptionData.language,
-        audio_path: transcriptionData.audio_path,
         audio_duration: transcriptionData.audio_duration,
+        total_words: transcriptionData.total_words,
+        reference_text: transcriptionData.reference_text,
+        has_reference: transcriptionData.has_reference,
+        transcription_type: 'words',
+        metadata: {
+          ...transcriptionData.metadata,
+          filename: finalFilename
+        }
       };
 
-      const response = await axios.post(`${API_BASE_URL}/api/transcription/save`, saveData);
+      const userId = getUserId();
+      if (!userId) {
+        alert('User not authenticated. Please sign in again.');
+        setSavingToDatabase(false);
+        return;
+      }
 
-      if (response.data.success) {
-        alert('Changes saved successfully!');
-        setHasChanges(false);
+      // If we have a current transcription ID, update it; otherwise create a new one
+      if (currentTranscriptionId) {
+        // Update existing transcription
+        const config = getAxiosConfig();
+        const response = await axios.put(
+          `${API_BASE_URL}/api/transcriptions/${currentTranscriptionId}`,
+          { transcription_data: transcriptionDataToSave },
+          config
+        );
+
+        if (response.data.success) {
+          alert('Changes saved successfully to database!');
+          setHasChanges(false);
+          fetchSavedTranscriptions(); // Refresh the saved transcriptions list
+        } else {
+          alert(`Error: ${response.data.error}`);
+        }
       } else {
-        alert(`Error: ${response.data.error}`);
+        // Create new transcription
+        const saveData = {
+          audio_path: audioPath,
+          audio_filename: audioFilename,
+          transcription_data: transcriptionDataToSave,
+          user_id: userId
+        };
+
+        const response = await axios.post(
+          `${API_BASE_URL}/api/transcription/save-to-database`,
+          saveData
+        );
+
+        if (response.data.success) {
+          // Store the new transcription ID if returned
+          if (response.data.data?._id) {
+            setCurrentTranscriptionId(response.data.data._id);
+          }
+          alert('Changes saved successfully to database!');
+          setHasChanges(false);
+          fetchSavedTranscriptions(); // Refresh the saved transcriptions list
+        } else {
+          alert(`Error: ${response.data.error}`);
+        }
       }
     } catch (error: any) {
       console.error('Error saving:', error);
       alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setSavingToDatabase(false);
     }
   };
 
@@ -522,6 +750,10 @@ function App() {
       );
 
       if (response.data.success) {
+        // Store the new transcription ID if returned
+        if (response.data.data?._id) {
+          setCurrentTranscriptionId(response.data.data._id);
+        }
         alert(`Successfully saved to database!`);
         fetchSavedTranscriptions(); // Refresh the saved transcriptions list
       } else {
@@ -824,10 +1056,20 @@ function App() {
                   {hasChanges && (
                     <button
                       onClick={saveChanges}
-                      className="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
+                      disabled={savingToDatabase}
+                      className="bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
                     >
-                      <Save className="h-4 w-4 mr-2" />
-                      Save Changes
+                      {savingToDatabase ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Saving...
+                        </>
+                      ) : (
+                        <>
+                          <Save className="h-4 w-4 mr-2" />
+                          Save Changes
+                        </>
+                      )}
                     </button>
                   )}
                   <button
@@ -863,6 +1105,7 @@ function App() {
                       setReferenceFile(null);
                       setReferenceText('');
                       setHasChanges(false);
+                      setCurrentTranscriptionId(null);
                     }}
                     className="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
                   >
@@ -913,15 +1156,148 @@ function App() {
                 ref={playerRef}
                 audioUrl={audioUrl}
                 onTimeUpdate={handlePlayerTimeUpdate}
-                onEnded={() => setCurrentPlayingIndex(null)}
+                onEnded={() => {
+                  setCurrentPlayingIndex(null);
+                  setSelectedWordIndex(null);
+                }}
                 onPause={handlePlayerPause}
+                selectedWord={
+                  selectedWordIndex !== null && transcriptionData
+                    ? {
+                        word: transcriptionData.words[selectedWordIndex].word,
+                        start: timeToSeconds(transcriptionData.words[selectedWordIndex].start),
+                        end: timeToSeconds(transcriptionData.words[selectedWordIndex].end),
+                        index: selectedWordIndex,
+                      }
+                    : null
+                }
+                onWordTimeUpdate={handleWordTimeUpdate}
               />
             </div>
 
             {/* Words Grid */}
             <div className="bg-white rounded-lg shadow-lg p-6">
-              <h3 className="text-xl font-semibold mb-2 text-gray-800">Transcribed Words</h3>
-              <p className="text-sm text-gray-600 mb-4">Click on any word to play audio segment</p>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xl font-semibold text-gray-800">Transcribed Words</h3>
+                <button
+                  onClick={startAddWord}
+                  className="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+                  title="Add new word"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Word
+                </button>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">
+                Click on any word to play audio segment and display it in the waveform. 
+                Use arrow keys to adjust times (1ms steps): ←/→ for start time, Shift+←/→ for end time.
+              </p>
+              
+              {/* Add Word Form */}
+              {isAddingWord && (
+                <div className="mb-4 p-4 border-2 border-green-500 rounded-lg bg-green-50">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-lg font-semibold text-gray-800">Add New Word</h4>
+                    <button
+                      onClick={cancelAddWord}
+                      className="text-gray-600 hover:text-gray-800"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Word *
+                      </label>
+                      <input
+                        type="text"
+                        value={newWordValues.word}
+                        onChange={(e) => setNewWordValues({ ...newWordValues, word: e.target.value })}
+                        placeholder="Enter word"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            addWord();
+                          }
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Start Time * (MM:SS.mmm or H:MM:SS.mmm)
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={newWordValues.start}
+                          onChange={(e) => setNewWordValues({ ...newWordValues, start: e.target.value })}
+                          placeholder="0:00.000"
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (playerRef.current) {
+                              const currentTime = playerRef.current.getCurrentTime();
+                              setNewWordValues({ ...newWordValues, start: secondsToTimeString(currentTime) });
+                            }
+                          }}
+                          className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-xs font-semibold whitespace-nowrap"
+                          title="Set to current audio position"
+                        >
+                          Use Current
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        End Time * (MM:SS.mmm or H:MM:SS.mmm)
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={newWordValues.end}
+                          onChange={(e) => setNewWordValues({ ...newWordValues, end: e.target.value })}
+                          placeholder="0:00.000"
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (playerRef.current) {
+                              const currentTime = playerRef.current.getCurrentTime();
+                              setNewWordValues({ ...newWordValues, end: secondsToTimeString(currentTime) });
+                            }
+                          }}
+                          className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-xs font-semibold whitespace-nowrap"
+                          title="Set to current audio position"
+                        >
+                          Use Current
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={addWord}
+                      className="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+                    >
+                      <Check className="h-4 w-4" />
+                      Add Word
+                    </button>
+                    <button
+                      onClick={cancelAddWord}
+                      className="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+                    >
+                      <X className="h-4 w-4" />
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex flex-wrap gap-0">
                 {transcriptionData.words.map((word, index) => (
                   <div key={index} className="relative group">
@@ -978,16 +1354,29 @@ function App() {
                         <div className="text-xs text-gray-500 mt-1">
                           {word.start} - {word.end}
                         </div>
-                        {/* Edit Button (shown on hover) */}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startEdit(index);
-                          }}
-                          className="absolute top-1 right-1 bg-white rounded-full p-1 shadow opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <Edit2 className="h-3 w-3 text-blue-600" />
-                        </button>
+                        {/* Edit and Delete Buttons (shown on hover) */}
+                        <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startEdit(index);
+                            }}
+                            className="bg-white rounded-full p-1 shadow hover:bg-blue-50"
+                            title="Edit word"
+                          >
+                            <Edit2 className="h-3 w-3 text-blue-600" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteWord(index);
+                            }}
+                            className="bg-white rounded-full p-1 shadow hover:bg-red-50"
+                            title="Delete word"
+                          >
+                            <Trash2 className="h-3 w-3 text-red-600" />
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
