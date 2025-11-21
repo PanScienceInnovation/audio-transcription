@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, ChevronDown, ChevronUp, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, ChevronDown, ChevronUp, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, BookmarkCheck } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
@@ -73,6 +73,8 @@ interface SavedTranscriptionSummary {
   audio_duration: number;
   s3_url: string;
   filename: string;
+  user_id?: string;
+  assigned_user_id?: string;
 }
 
 interface SavedTranscriptionDocument {
@@ -429,8 +431,26 @@ function App() {
   );
 
   const handlePlayerPause = useCallback(() => {
-    setCurrentPlayingIndex((prev) => (prev !== null ? null : prev));
-  }, []);
+    // Keep the word highlighted at the paused timestamp
+    if (!transcriptionData || wordTimings.length === 0 || !playerRef.current) {
+      return;
+    }
+
+    const currentTime = playerRef.current.getCurrentTime();
+    let pausedIndex: number | null = null;
+    
+    for (let i = 0; i < wordTimings.length; i += 1) {
+      const timing = wordTimings[i];
+      if (currentTime >= timing.start && currentTime <= timing.end) {
+        pausedIndex = i;
+        break;
+      }
+    }
+
+    // Set the current playing index to the word at the paused timestamp
+    // This will keep it highlighted even when paused
+    setCurrentPlayingIndex(pausedIndex);
+  }, [transcriptionData, wordTimings]);
 
   const startEdit = (index: number) => {
     const word = transcriptionData!.words[index];
@@ -620,9 +640,14 @@ function App() {
       if (currentTranscriptionId) {
         // Update existing transcription
         const config = getAxiosConfig();
+        const updateData: any = { transcription_data: transcriptionDataToSave };
+        // Include user_id to mark who saved the changes
+        if (userId) {
+          updateData.user_id = userId;
+        }
         const response = await axios.put(
           `${API_BASE_URL}/api/transcriptions/${currentTranscriptionId}`,
-          { transcription_data: transcriptionDataToSave },
+          updateData,
           config
         );
 
@@ -853,26 +878,52 @@ function App() {
             <div className={`px-8 pb-8 transition-all duration-300 ease-in-out ${
               isUploadFormExpanded ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0 overflow-hidden'
             }`}>
-            {/* Audio File Upload */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Audio File *
-              </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-500 transition-colors">
-                <input
-                  type="file"
-                  accept=".mp3,.wav,.m4a,.ogg,.flac,.aac"
-                  onChange={handleAudioFileChange}
-                  className="hidden"
-                  id="audio-upload"
-                />
-                <label htmlFor="audio-upload" className="cursor-pointer">
-                  <Upload className="mx-auto h-12 w-12 text-gray-400 mb-2" />
-                  <p className="text-sm text-gray-600">
-                    {audioFile ? audioFile.name : 'Click to upload audio file'}
-                  </p>
-                  <p className="text-xs text-gray-400 mt-1">MP3, WAV, M4A, OGG, FLAC, AAC</p>
+            {/* Audio File Upload and Reference Text Side by Side */}
+            <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Audio File Upload */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Audio File *
                 </label>
+                <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-blue-500 transition-colors">
+                  <input
+                    type="file"
+                    accept=".mp3,.wav,.m4a,.ogg,.flac,.aac"
+                    onChange={handleAudioFileChange}
+                    className="hidden"
+                    id="audio-upload"
+                  />
+                  <label htmlFor="audio-upload" className="cursor-pointer">
+                    <Upload className="mx-auto h-8 w-8 text-gray-400 mb-2" />
+                    <p className="text-sm text-gray-600">
+                      {audioFile ? audioFile.name : 'Click to upload audio file'}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">MP3, WAV, M4A, OGG, FLAC, AAC</p>
+                  </label>
+                </div>
+              </div>
+
+              {/* Reference Text */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Reference Text (Optional)
+                </label>
+                <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-blue-500 transition-colors">
+                  <input
+                    type="file"
+                    accept=".txt"
+                    onChange={handleReferenceFileChange}
+                    className="hidden"
+                    id="reference-upload"
+                  />
+                  <label htmlFor="reference-upload" className="cursor-pointer">
+                    <Upload className="mx-auto h-8 w-8 text-gray-400 mb-2" />
+                    <p className="text-sm text-gray-600">
+                      {referenceFile ? referenceFile.name : 'Click to upload reference file'}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">TXT</p>
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -892,35 +943,6 @@ function App() {
                   </option>
                 ))}
               </select>
-            </div>
-
-            {/* Reference Text */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Reference Text (Optional)
-              </label>
-              <div className="mb-3">
-                <input
-                  type="file"
-                  accept=".txt"
-                  onChange={handleReferenceFileChange}
-                  className="hidden"
-                  id="reference-upload"
-                />
-                <label
-                  htmlFor="reference-upload"
-                  className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50"
-                >
-                  <Upload className="h-4 w-4 mr-2" />
-                  {referenceFile ? referenceFile.name : 'Upload Reference File'}
-                </label>
-              </div>
-              <textarea
-                value={referenceText}
-                onChange={(e) => setReferenceText(e.target.value)}
-                placeholder="Or paste reference text here..."
-                className="w-full h-32 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
             </div>
 
             {/* Transcribe Button */}
@@ -959,19 +981,34 @@ function App() {
             ) : savedTranscriptions.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 <Database className="h-12 w-12 mx-auto mb-3 text-gray-400" />
-                <p>No saved word-level transcriptions found</p>
+                <p>No assigned word-level transcriptions found</p>
               </div>
             ) : (
               <>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {savedTranscriptions.map((transcription) => (
+                {savedTranscriptions.map((transcription) => {
+                  const { id: currentUserId, isAdmin } = getUserInfo();
+                  // Compare user_id as strings to handle type differences
+                  const isSavedByUser = !isAdmin && currentUserId && transcription.user_id && 
+                    String(transcription.user_id) === String(currentUserId);
+                  
+                  return (
                   <div
                     key={transcription._id}
                     className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
                   >
                     <div className="flex items-start justify-between mb-2">
-                      <h3 className="font-semibold text-gray-800 text-sm truncate flex-1">
+                      <h3 className="font-semibold text-gray-800 text-sm truncate flex-1 flex items-center gap-2">
                         {transcription.filename || 'Untitled'}
+                        {isSavedByUser && (
+                          <span 
+                            title="Saved by you"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-300 flex-shrink-0"
+                          >
+                            <BookmarkCheck className="h-3 w-3" />
+                            <span className="text-xs font-medium">Saved</span>
+                          </span>
+                        )}
                       </h3>
                       <button
                         onClick={(e) => {
@@ -1011,7 +1048,8 @@ function App() {
                       Load Transcription
                     </button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
               
               {/* Pagination Controls */}
@@ -1165,7 +1203,7 @@ function App() {
                       )}
                     </button>
                   )}
-                  <button
+                  {/* <button
                     onClick={saveToDatabase}
                     disabled={savingToDatabase}
                     className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
@@ -1181,7 +1219,7 @@ function App() {
                         Save to Database
                       </>
                     )}
-                  </button>
+                  </button> */}
                   <button
                     onClick={downloadTranscription}
                     className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"

@@ -592,6 +592,22 @@ class StorageManager:
                     # Fallback to metadata filename
                     display_filename = metadata.get('filename', '')
                 
+                # Calculate edited words count (for words type transcriptions)
+                edited_words_count = 0
+                if transcription_data.get('transcription_type') == 'words':
+                    words = transcription_data.get('words', [])
+                    edited_words_count = sum(1 for word in words if word.get('is_edited', False))
+                
+                # Determine status:
+                # - "done" only if file is assigned AND user has saved changes (user_id exists)
+                # - "pending" if not assigned, or assigned but user hasn't saved changes yet
+                assigned_user_id = doc.get('assigned_user_id')
+                user_id = doc.get('user_id')
+                if assigned_user_id and user_id:
+                    status = 'done'  # Assigned and user has saved changes
+                else:
+                    status = 'pending'  # Not assigned, or assigned but not saved yet
+                
                 summary = {
                     '_id': doc['_id'],
                     'created_at': doc.get('created_at'),
@@ -603,8 +619,10 @@ class StorageManager:
                     'audio_duration': transcription_data.get('audio_duration', 0),
                     's3_url': s3_metadata.get('url', ''),
                     'filename': display_filename,
-                    'user_id': doc.get('user_id'),  # Creator
-                    'assigned_user_id': doc.get('assigned_user_id')  # Assigned user
+                    'user_id': doc.get('user_id'),  # Creator/saver
+                    'assigned_user_id': doc.get('assigned_user_id'),  # Assigned user
+                    'status': status,  # 'done' or 'pending'
+                    'edited_words_count': edited_words_count  # Number of words edited
                 }
                 transcriptions.append(summary)
             
@@ -629,7 +647,7 @@ class StorageManager:
         Args:
             document_id: MongoDB document ID
             transcription_data: Updated transcription data
-            user_id: Ignored (kept for backward compatibility)
+            user_id: User ID to mark who saved the changes (optional)
             
         Returns:
             Dictionary with update result
@@ -643,14 +661,21 @@ class StorageManager:
             
             from bson import ObjectId
             
+            # Prepare update data
+            update_data = {
+                'transcription_data': transcription_data,
+                'updated_at': datetime.now(timezone.utc)
+            }
+            
+            # If user_id is provided, update it to mark who saved the changes
+            if user_id:
+                update_data['user_id'] = str(user_id)  # Ensure it's a string
+            
             # Update document by ID only (no user_id filtering)
             update_result = self.collection.update_one(
                 {'_id': ObjectId(document_id)},
                 {
-                    '$set': {
-                        'transcription_data': transcription_data,
-                        'updated_at': datetime.now(timezone.utc)
-                    }
+                    '$set': update_data
                 }
             )
             

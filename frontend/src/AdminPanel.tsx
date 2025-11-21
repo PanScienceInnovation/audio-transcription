@@ -48,6 +48,10 @@ interface Transcription {
   language: string;
   assigned_user_id?: string;
   user_id?: string;
+  status?: 'done' | 'pending';
+  edited_words_count?: number;
+  total_words?: number;
+  transcription_type?: 'words' | 'phrases';
 }
 
 function AdminPanel() {
@@ -64,6 +68,8 @@ function AdminPanel() {
   const [selectedTranscriptions, setSelectedTranscriptions] = useState<Set<string>>(new Set());
   const [bulkAssignUserId, setBulkAssignUserId] = useState<string>('');
   const [bulkAssigning, setBulkAssigning] = useState(false);
+  const [languageFilter, setLanguageFilter] = useState<string>('');
+  const [dateFilter, setDateFilter] = useState<string>('');
 
   const { isAdmin } = getUserInfo();
 
@@ -75,10 +81,10 @@ function AdminPanel() {
     loadData();
   }, [isAdmin]);
 
-  // Reset to page 1 when search term changes
+  // Reset to page 1 when search term or filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm]);
+  }, [searchTerm, languageFilter, dateFilter]);
 
   const loadData = async () => {
     setLoading(true);
@@ -299,11 +305,38 @@ function AdminPanel() {
     return user ? user.name || user.username : userId;
   };
 
-  // Filter transcriptions based on search term
-  const filteredTranscriptions = transcriptions.filter(t =>
-    t.filename.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    getUserName(t.assigned_user_id).toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Get unique languages for filter dropdown
+  const uniqueLanguages = Array.from(new Set(transcriptions.map(t => t.language).filter(Boolean))).sort();
+
+  // Filter transcriptions based on search term, language, and date
+  const filteredTranscriptions = transcriptions.filter(t => {
+    // Search term filter
+    const searchLower = searchTerm.toLowerCase();
+    const matchesSearch = !searchTerm || (
+      t.filename.toLowerCase().includes(searchLower) ||
+      getUserName(t.assigned_user_id).toLowerCase().includes(searchLower) ||
+      (t.status && t.status.toLowerCase().includes(searchLower)) ||
+      (searchLower === 'done' && t.status === 'done') ||
+      (searchLower === 'pending' && t.status === 'pending')
+    );
+
+    // Language filter
+    const matchesLanguage = !languageFilter || t.language === languageFilter;
+
+    // Date filter
+    let matchesDate = true;
+    if (dateFilter) {
+      const transcriptionDate = new Date(t.created_at);
+      const filterDate = new Date(dateFilter);
+      // Compare dates (ignore time)
+      matchesDate = 
+        transcriptionDate.getFullYear() === filterDate.getFullYear() &&
+        transcriptionDate.getMonth() === filterDate.getMonth() &&
+        transcriptionDate.getDate() === filterDate.getDate();
+    }
+
+    return matchesSearch && matchesLanguage && matchesDate;
+  });
 
   // Calculate pagination
   const totalItems = filteredTranscriptions.length;
@@ -400,16 +433,53 @@ function AdminPanel() {
           )}
 
           <div className="mb-6 space-y-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+            {/* Search and Filter Controls */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+                <input
+                  type="text"
+                  placeholder="Search by filename or user..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <select
+                value={languageFilter}
+                onChange={(e) => setLanguageFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">All Languages</option>
+                {uniqueLanguages.map((lang) => (
+                  <option key={lang} value={lang}>
+                    {lang}
+                  </option>
+                ))}
+              </select>
               <input
-                type="text"
-                placeholder="Search transcriptions by filename or assigned user..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Filter by date"
               />
             </div>
+            {/* Clear Filters Button */}
+            {(languageFilter || dateFilter) && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setLanguageFilter('');
+                    setDateFilter('');
+                  }}
+                  className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                >
+                  <X className="h-4 w-4" />
+                  Clear Filters
+                </button>
+              </div>
+            )}
 
             {/* Bulk Assignment Controls */}
             {selectedTranscriptions.size > 0 && (
@@ -520,6 +590,12 @@ function AdminPanel() {
                       Created
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      Edited Words
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
                       Assigned To
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
@@ -530,7 +606,7 @@ function AdminPanel() {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {paginatedTranscriptions.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
                         {searchTerm ? 'No transcriptions match your search' : 'No transcriptions found'}
                       </td>
                     </tr>
@@ -562,6 +638,24 @@ function AdminPanel() {
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                           {new Date(transcription.created_at).toLocaleDateString()}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              transcription.status === 'done'
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-yellow-100 text-yellow-800'
+                            }`}
+                          >
+                            {transcription.status === 'done' ? 'Done' : 'Pending'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {transcription.transcription_type === 'words' && transcription.edited_words_count !== undefined
+                            ? `${transcription.edited_words_count} / ${transcription.total_words || 0}`
+                            : transcription.transcription_type === 'phrases'
+                            ? 'N/A'
+                            : '—'}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span

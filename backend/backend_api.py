@@ -1071,6 +1071,7 @@ def update_transcription_by_id(transcription_id):
     
     JSON Body:
         - transcription_data: Updated transcription data
+        - user_id: (optional) User ID to mark who saved the changes
     """
     try:
         data = request.get_json()
@@ -1082,8 +1083,9 @@ def update_transcription_by_id(transcription_id):
             }), 400
         
         transcription_data = data['transcription_data']
+        user_id = data.get('user_id')  # Get user_id from request
         
-        result = storage_manager.update_transcription(transcription_id, transcription_data)
+        result = storage_manager.update_transcription(transcription_id, transcription_data, user_id=user_id)
         
         if result['success']:
             return jsonify({
