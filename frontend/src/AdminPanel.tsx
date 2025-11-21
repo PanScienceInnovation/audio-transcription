@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Users, FileText, UserCheck, UserX, Loader2, Search, Check, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download } from 'lucide-react';
+import { Users, FileText, UserCheck, UserX, Loader2, Search, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
 

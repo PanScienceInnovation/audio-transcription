@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, BookmarkCheck } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, Search, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
@@ -76,6 +76,7 @@ interface SavedTranscriptionSummary {
   filename: string;
   user_id?: string;
   assigned_user_id?: string;
+  status?: 'done' | 'pending';
 }
 
 interface SavedTranscriptionDocument {
@@ -127,9 +128,10 @@ function App() {
   const [isRenaming, setIsRenaming] = useState(false);
   const [newFilename, setNewFilename] = useState('');
   const [savedTranscriptions, setSavedTranscriptions] = useState<SavedTranscriptionSummary[]>([]);
+  const [allSavedTranscriptions, setAllSavedTranscriptions] = useState<SavedTranscriptionSummary[]>([]);
   const [loadingSaved, setLoadingSaved] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(9); // 9 items per page (3x3 grid)
+  const [itemsPerPage] = useState(20); // 20 items per page for table
   const [totalItems, setTotalItems] = useState(0);
   const [isAddingWord, setIsAddingWord] = useState(false);
   const [newWordValues, setNewWordValues] = useState<{ start: string; end: string; word: string }>({
@@ -137,6 +139,12 @@ function App() {
     end: '',
     word: '',
   });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [languageFilter, setLanguageFilter] = useState<string>('');
+  const [dateFilter, setDateFilter] = useState<string>('');
+  const [sortField, setSortField] = useState<'filename' | 'status' | 'created_at'>('created_at');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -202,7 +210,6 @@ function App() {
     setLoadingSaved(true);
     try {
       const config = getAxiosConfig();
-      const skip = (currentPage - 1) * itemsPerPage;
       // Fetch all transcriptions first to filter and get total count
       const response = await axios.get(
         `${API_BASE_URL}/api/transcriptions?limit=1000&skip=0`,
@@ -214,10 +221,7 @@ function App() {
         const wordsTranscriptions = allTranscriptions.filter(
           (t: SavedTranscriptionSummary) => t.transcription_type === 'words'
         );
-        setTotalItems(wordsTranscriptions.length);
-        // Apply pagination after filtering
-        const paginated = wordsTranscriptions.slice(skip, skip + itemsPerPage);
-        setSavedTranscriptions(paginated);
+        setAllSavedTranscriptions(wordsTranscriptions);
       }
     } catch (error: any) {
       console.error('Error fetching saved transcriptions:', error);
@@ -230,6 +234,87 @@ function App() {
       setLoadingSaved(false);
     }
   };
+
+  // Filter and sort transcriptions
+  useEffect(() => {
+    let filtered = [...allSavedTranscriptions];
+
+    // Apply search filter
+    if (searchTerm) {
+      const searchLower = searchTerm.toLowerCase();
+      filtered = filtered.filter(t => 
+        t.filename?.toLowerCase().includes(searchLower) ||
+        (t.status && t.status.toLowerCase().includes(searchLower))
+      );
+    }
+
+    // Apply status filter
+    if (statusFilter) {
+      filtered = filtered.filter(t => t.status === statusFilter);
+    }
+
+    // Apply language filter
+    if (languageFilter) {
+      filtered = filtered.filter(t => t.language === languageFilter);
+    }
+
+    // Apply date filter
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
+      filtered = filtered.filter(t => {
+        const transcriptionDate = new Date(t.created_at);
+        return transcriptionDate.getFullYear() === filterDate.getFullYear() &&
+               transcriptionDate.getMonth() === filterDate.getMonth() &&
+               transcriptionDate.getDate() === filterDate.getDate();
+      });
+    }
+
+    // Apply sorting
+    filtered.sort((a, b) => {
+      // First, sort by status (pending first, then done)
+      const aStatus = a.status || 'pending';
+      const bStatus = b.status || 'pending';
+      
+      // If statuses are different, pending comes first
+      if (aStatus !== bStatus) {
+        if (aStatus === 'pending') return -1;
+        if (bStatus === 'pending') return 1;
+      }
+      
+      // If statuses are the same (or both are done), apply secondary sort
+      let aValue: any;
+      let bValue: any;
+
+      if (sortField === 'filename') {
+        aValue = (a.filename || '').toLowerCase();
+        bValue = (b.filename || '').toLowerCase();
+      } else if (sortField === 'status') {
+        // When sorting by status, we've already sorted by status above, so just use secondary sort by created_at
+        aValue = new Date(a.created_at).getTime();
+        bValue = new Date(b.created_at).getTime();
+      } else if (sortField === 'created_at') {
+        aValue = new Date(a.created_at).getTime();
+        bValue = new Date(b.created_at).getTime();
+      }
+
+      // Apply secondary sort direction
+      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    setTotalItems(filtered.length);
+
+    // Apply pagination
+    const skip = (currentPage - 1) * itemsPerPage;
+    const paginated = filtered.slice(skip, skip + itemsPerPage);
+    setSavedTranscriptions(paginated);
+  }, [allSavedTranscriptions, searchTerm, statusFilter, languageFilter, dateFilter, sortField, sortDirection, currentPage, itemsPerPage]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, languageFilter, dateFilter, sortField, sortDirection]);
 
   const loadTranscriptionByFilename = async (filenameToLoad: string) => {
     setLoadingSaved(true);
@@ -1034,112 +1119,220 @@ function App() {
           </div>
         )}
 
-        <div className="max-w-7xl mx-auto mb-2 font-bold">
-          Saved data
-        </div>
+        <div className="max-w-7xl mx-auto mb-4">
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">Saved Data</h2>
 
-        {/* Saved Transcriptions Section */}
+          {/* Saved Transcriptions Table Section */}
         {!transcriptionData && (
-          <div className="max-w-7xl mx-auto mb-8">
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              {/* Filter Controls */}
+              <div className="mb-6 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+                    <input
+                      type="text"
+                      placeholder="Search by filename..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">All Status</option>
+                    <option value="done">Done</option>
+                    <option value="pending">Pending</option>
+                  </select>
+                  <select
+                    value={languageFilter}
+                    onChange={(e) => setLanguageFilter(e.target.value)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">All Languages</option>
+                    {Array.from(new Set(allSavedTranscriptions.map(t => t.language).filter(Boolean))).sort().map(lang => (
+                      <option key={lang} value={lang}>{lang}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="date"
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                {(searchTerm || statusFilter || languageFilter || dateFilter) && (
+                  <button
+                    onClick={() => {
+                      setSearchTerm('');
+                      setStatusFilter('');
+                      setLanguageFilter('');
+                      setDateFilter('');
+                    }}
+                    className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                  >
+                    <X className="h-4 w-4" />
+                    Clear Filters
+                  </button>
+                )}
+              </div>
+
             {loadingSaved ? (
-              <div className="flex justify-center items-center py-8">
+                <div className="flex justify-center items-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
               </div>
             ) : savedTranscriptions.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                <Database className="h-12 w-12 mx-auto mb-3 text-gray-400" />
-                <p>No assigned word-level transcriptions found</p>
+                <div className="text-center py-12 text-gray-500">
+                  <Database className="h-16 w-16 mx-auto mb-4 text-gray-400" />
+                  <p className="text-lg">No transcriptions found</p>
+                  <p className="text-sm text-gray-400 mt-2">
+                    {allSavedTranscriptions.length === 0 
+                      ? 'No assigned word-level transcriptions found'
+                      : 'No transcriptions match your filters'}
+                  </p>
               </div>
             ) : (
               <>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {savedTranscriptions.map((transcription, index) => {
-                  const { id: currentUserId, isAdmin } = getUserInfo();
-                  // Compare user_id as strings to handle type differences
-                  const isSavedByUser = !isAdmin && currentUserId && transcription.user_id && 
-                    String(transcription.user_id) === String(currentUserId);
-                  const serialNumber = (currentPage - 1) * itemsPerPage + index + 1;
-                  
-                  return (
-                  <div
-                    key={transcription._id}
-                    className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-center gap-2 flex-1">
-                        <span className="text-xs font-bold text-gray-500 bg-gray-200 px-2 py-1 rounded">
-                          #{serialNumber}
-                        </span>
-                        <h3 className="font-semibold text-gray-800 text-sm truncate flex-1 flex items-center gap-2">
-                          {transcription.filename || 'Untitled'}
-                        {isSavedByUser && (
-                          <span 
-                            title="Completed by you"
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-300 flex-shrink-0"
+                  {/* Table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-100">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider w-16">
+                            S.No.
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
+                            onClick={() => {
+                              if (sortField === 'filename') {
+                                setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                              } else {
+                                setSortField('filename');
+                                setSortDirection('asc');
+                              }
+                            }}
                           >
-                            <BookmarkCheck className="h-3 w-3" />
-                            <span className="text-xs font-medium">Completed</span>
-                          </span>
-                        )}
-                        </h3>
+                            <div className="flex items-center gap-2">
+                              Filename
+                              {sortField === 'filename' ? (
+                                sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                              ) : (
+                                <ArrowUpDown className="h-4 w-4 text-gray-400" />
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
+                            onClick={() => {
+                              if (sortField === 'status') {
+                                setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                              } else {
+                                setSortField('status');
+                                setSortDirection('asc');
+                              }
+                            }}
+                          >
+                            <div className="flex items-center gap-2">
+                              Status
+                              {sortField === 'status' ? (
+                                sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                              ) : (
+                                <ArrowUpDown className="h-4 w-4 text-gray-400" />
+                              )}
                       </div>
-                      {getUserInfo().isAdmin && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteSavedTranscription(transcription._id);
-                          }}
-                          className="ml-2 text-red-600 hover:text-red-800 p-1"
-                          title="Delete"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
+                            onClick={() => {
+                              if (sortField === 'created_at') {
+                                setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                              } else {
+                                setSortField('created_at');
+                                setSortDirection('desc');
+                              }
+                            }}
+                          >
+                            <div className="flex items-center gap-2">
+                              Created Date
+                              {sortField === 'created_at' ? (
+                                sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                              ) : (
+                                <ArrowUpDown className="h-4 w-4 text-gray-400" />
                       )}
                     </div>
-                    <div className="text-xs text-gray-600 space-y-1 mb-3">
-                      <div className="flex justify-between">
-                        <span>Words:</span>
-                        <span className="font-medium">{transcription.total_words}</span>
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                            Language
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {savedTranscriptions.map((transcription, index) => {
+                          const serialNumber = (currentPage - 1) * itemsPerPage + index + 1;
+                          return (
+                            <tr key={transcription._id} className="hover:bg-gray-50">
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                {serialNumber}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <div className="flex items-center">
+                                  <Database className="h-5 w-5 text-gray-400 mr-2" />
+                                  <span className="text-sm font-medium text-gray-900">
+                                    {transcription.filename || 'Untitled'}
+                                  </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span>Duration:</span>
-                        <span className="font-medium">{transcription.audio_duration?.toFixed(2) || '0.00'}s</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Language:</span>
-                        <span className="font-medium">{transcription.language}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Created:</span>
-                        <span className="font-medium">{new Date(transcription.created_at).toLocaleDateString()}</span>
-                      </div>
-                    </div>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span
+                                  className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                    transcription.status === 'done'
+                                      ? 'bg-green-100 text-green-800'
+                                      : 'bg-yellow-100 text-yellow-800'
+                                  }`}
+                                >
+                                  {transcription.status === 'done' ? 'Done' : 'Pending'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                {new Date(transcription.created_at).toLocaleDateString()}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                {transcription.language}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
                     <button
                       onClick={() => loadSavedTranscription(transcription._id, transcription.filename)}
                       disabled={loadingSaved}
-                      className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
                     >
                       <FolderOpen className="h-4 w-4" />
                       Load Transcription
                     </button>
-                  </div>
+                              </td>
+                            </tr>
                   );
                 })}
+                      </tbody>
+                    </table>
               </div>
               
               {/* Pagination Controls */}
               {totalItems > itemsPerPage && (
-                <div className="mt-6 flex items-center justify-between bg-white rounded-lg shadow p-4">
-                  <div className="flex items-center gap-2 text-sm text-gray-600">
-                    <span>
+                    <div className="mt-6 flex items-center justify-between border-t border-gray-200 pt-4">
+                      <div className="flex items-center text-sm text-gray-700">
                       Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, totalItems)} of {totalItems} transcriptions
-                    </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
                       disabled={currentPage === 1 || loadingSaved}
-                      className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <ChevronLeft className="h-4 w-4" />
                       Previous
@@ -1181,7 +1374,7 @@ function App() {
                     <button
                       onClick={() => setCurrentPage(prev => Math.min(Math.ceil(totalItems / itemsPerPage), prev + 1))}
                       disabled={currentPage >= Math.ceil(totalItems / itemsPerPage) || loadingSaved}
-                      className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Next
                       <ChevronRight className="h-4 w-4" />
@@ -1193,6 +1386,7 @@ function App() {
             )}
           </div>
         )}
+        </div>
 
         {/* Results Section */}
         {transcriptionData && (

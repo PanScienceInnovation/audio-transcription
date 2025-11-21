@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit, ChevronLeft, ChevronRight, Search, ArrowUpDown, ArrowUp, ArrowDown, FolderOpen } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
@@ -63,6 +63,7 @@ interface TranscriptionSummary {
   audio_duration: number;
   s3_url: string;
   filename: string;
+  status?: 'done' | 'pending';
 }
 
 interface TranscriptionDocument {
@@ -90,12 +91,20 @@ interface TranscriptionDocument {
 
 function SavedTranscriptions() {
   const [transcriptions, setTranscriptions] = useState<TranscriptionSummary[]>([]);
+  const [allTranscriptions, setAllTranscriptions] = useState<TranscriptionSummary[]>([]);
   const [selectedTranscription, setSelectedTranscription] = useState<TranscriptionDocument | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(12); // 12 items per page (3x4 grid)
+  const [itemsPerPage] = useState(20); // 20 items per page for table
   const [totalItems, setTotalItems] = useState(0);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [languageFilter, setLanguageFilter] = useState<string>('');
+  const [transcriptionTypeFilter, setTranscriptionTypeFilter] = useState<string>('');
+  const [dateFilter, setDateFilter] = useState<string>('');
+  const [sortField, setSortField] = useState<'filename' | 'status' | 'created_at'>('created_at');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [audioUrl, setAudioUrl] = useState('');
   const [currentPlayingIndex, setCurrentPlayingIndex] = useState<number | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -136,14 +145,13 @@ function SavedTranscriptions() {
     setLoading(true);
     try {
       const config = getAxiosConfig();
-      const skip = (currentPage - 1) * itemsPerPage;
+      // Fetch all transcriptions to filter and sort
       const response = await axios.get(
-        `${API_BASE_URL}/api/transcriptions?limit=${itemsPerPage}&skip=${skip}`,
+        `${API_BASE_URL}/api/transcriptions?limit=1000&skip=0`,
         config
       );
       if (response.data.success) {
-        setTranscriptions(response.data.data.transcriptions || []);
-        setTotalItems(response.data.data.total || 0);
+        setAllTranscriptions(response.data.data.transcriptions || []);
       } else {
         alert(`Error: ${response.data.error}`);
       }
@@ -154,6 +162,92 @@ function SavedTranscriptions() {
       setLoading(false);
     }
   };
+
+  // Filter and sort transcriptions
+  useEffect(() => {
+    let filtered = [...allTranscriptions];
+
+    // Apply search filter
+    if (searchTerm) {
+      const searchLower = searchTerm.toLowerCase();
+      filtered = filtered.filter(t => 
+        t.filename?.toLowerCase().includes(searchLower) ||
+        (t.status && t.status.toLowerCase().includes(searchLower))
+      );
+    }
+
+    // Apply status filter
+    if (statusFilter) {
+      filtered = filtered.filter(t => t.status === statusFilter);
+    }
+
+    // Apply language filter
+    if (languageFilter) {
+      filtered = filtered.filter(t => t.language === languageFilter);
+    }
+
+    // Apply transcription type filter
+    if (transcriptionTypeFilter) {
+      filtered = filtered.filter(t => t.transcription_type === transcriptionTypeFilter);
+    }
+
+    // Apply date filter
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter);
+      filtered = filtered.filter(t => {
+        const transcriptionDate = new Date(t.created_at);
+        return transcriptionDate.getFullYear() === filterDate.getFullYear() &&
+               transcriptionDate.getMonth() === filterDate.getMonth() &&
+               transcriptionDate.getDate() === filterDate.getDate();
+      });
+    }
+
+    // Apply sorting
+    filtered.sort((a, b) => {
+      // First, sort by status (pending first, then done)
+      const aStatus = a.status || 'pending';
+      const bStatus = b.status || 'pending';
+      
+      // If statuses are different, pending comes first
+      if (aStatus !== bStatus) {
+        if (aStatus === 'pending') return -1;
+        if (bStatus === 'pending') return 1;
+      }
+      
+      // If statuses are the same (or both are done), apply secondary sort
+      let aValue: any;
+      let bValue: any;
+
+      if (sortField === 'filename') {
+        aValue = (a.filename || '').toLowerCase();
+        bValue = (b.filename || '').toLowerCase();
+      } else if (sortField === 'status') {
+        // When sorting by status, we've already sorted by status above, so just use secondary sort by created_at
+        aValue = new Date(a.created_at).getTime();
+        bValue = new Date(b.created_at).getTime();
+      } else if (sortField === 'created_at') {
+        aValue = new Date(a.created_at).getTime();
+        bValue = new Date(b.created_at).getTime();
+      }
+
+      // Apply secondary sort direction
+      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    setTotalItems(filtered.length);
+
+    // Apply pagination
+    const skip = (currentPage - 1) * itemsPerPage;
+    const paginated = filtered.slice(skip, skip + itemsPerPage);
+    setTranscriptions(paginated);
+  }, [allTranscriptions, searchTerm, statusFilter, languageFilter, transcriptionTypeFilter, dateFilter, sortField, sortDirection, currentPage, itemsPerPage]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, languageFilter, transcriptionTypeFilter, dateFilter, sortField, sortDirection]);
 
   const fetchTranscriptionDetails = async (id: string) => {
     setLoadingDetails(true);
@@ -1005,88 +1099,240 @@ function SavedTranscriptions() {
           <p className="text-gray-600">View and edit your saved transcriptions</p>
         </div>
 
+        {/* Filter Controls */}
+        <div className="mb-6 bg-white rounded-lg shadow-lg p-6">
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+                <input
+                  type="text"
+                  placeholder="Search by filename..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                />
+              </div>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              >
+                <option value="">All Status</option>
+                <option value="done">Done</option>
+                <option value="pending">Pending</option>
+              </select>
+              <select
+                value={transcriptionTypeFilter}
+                onChange={(e) => setTranscriptionTypeFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              >
+                <option value="">All Types</option>
+                <option value="words">Words</option>
+                <option value="phrases">Phrases</option>
+              </select>
+              <select
+                value={languageFilter}
+                onChange={(e) => setLanguageFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              >
+                <option value="">All Languages</option>
+                {Array.from(new Set(allTranscriptions.map(t => t.language).filter(Boolean))).sort().map(lang => (
+                  <option key={lang} value={lang}>{lang}</option>
+                ))}
+              </select>
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </div>
+            {(searchTerm || statusFilter || languageFilter || transcriptionTypeFilter || dateFilter) && (
+              <button
+                onClick={() => {
+                  setSearchTerm('');
+                  setStatusFilter('');
+                  setLanguageFilter('');
+                  setTranscriptionTypeFilter('');
+                  setDateFilter('');
+                }}
+                className="text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+              >
+                <X className="h-4 w-4" />
+                Clear Filters
+              </button>
+            )}
+          </div>
+        </div>
+
         {loading ? (
-          <div className="flex justify-center items-center py-12">
+          <div className="flex justify-center items-center py-12 bg-white rounded-lg shadow-lg">
             <Loader2 className="h-8 w-8 animate-spin text-indigo-600" />
           </div>
         ) : transcriptions.length === 0 ? (
           <div className="bg-white rounded-lg shadow-lg p-12 text-center">
             <Database className="h-16 w-16 text-gray-400 mx-auto mb-4" />
             <p className="text-gray-600 text-lg">No saved transcriptions found</p>
-            <p className="text-gray-400 text-sm mt-2">Save a transcription to see it here</p>
+            <p className="text-gray-400 text-sm mt-2">
+              {allTranscriptions.length === 0 
+                ? 'Save a transcription to see it here'
+                : 'No transcriptions match your filters'}
+            </p>
           </div>
         ) : (
           <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {transcriptions.map((transcription, index) => {
-              const serialNumber = (currentPage - 1) * itemsPerPage + index + 1;
-              return (
-              <div
-                key={transcription._id}
-                onClick={() => fetchTranscriptionDetails(transcription._id)}
-                className="bg-white rounded-lg shadow-lg p-6 cursor-pointer hover:shadow-xl transition-shadow"
-              >
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-gray-500 bg-gray-200 px-2 py-1 rounded">
-                      #{serialNumber}
-                    </span>
-                    <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800 capitalize">
-                      {transcription.transcription_type}
-                    </span>
-                  </div>
-                  <span className="text-xs text-gray-500">
-                    {new Date(transcription.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-                <h3 className="text-lg font-semibold text-gray-800 mb-2">
-                  {transcription.filename || 'Untitled'}
-                </h3>
-                {/* {transcription.filename && (
-                  <p className="text-xs text-gray-500 mb-2">Original: {transcription.filename}</p>
-                )} */}
-                <div className="space-y-2 text-sm text-gray-600">
-                  <div className="flex justify-between">
-                    <span>Language:</span>
-                    <span className="font-medium">{transcription.language}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>{transcription.transcription_type === 'words' ? 'Words:' : 'Phrases:'}</span>
-                    <span className="font-medium">
-                      {transcription.transcription_type === 'words'
-                        ? transcription.total_words
-                        : transcription.total_phrases}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Duration:</span>
-                    <span className="font-medium">{transcription.audio_duration?.toFixed(2) || '0.00'}s</span>
-                  </div>
-                </div>
-                <div className="mt-4 flex gap-2">
-                  <button
-                    onClick={() => fetchTranscriptionDetails(transcription._id)}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center"
-                  >
-                    <Play className="h-4 w-4 mr-2" />
-                    View Details
-                  </button>
-                  {getUserInfo().isAdmin && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteTranscription(transcription._id);
+          <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+            {/* Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider w-16">
+                      S.No.
+                    </th>
+                    <th 
+                      className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
+                      onClick={() => {
+                        if (sortField === 'filename') {
+                          setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                        } else {
+                          setSortField('filename');
+                          setSortDirection('asc');
+                        }
                       }}
-                      className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center"
-                      title="Delete transcription"
                     >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
-              );
-            })}
+                      <div className="flex items-center gap-2">
+                        Filename
+                        {sortField === 'filename' ? (
+                          sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                        ) : (
+                          <ArrowUpDown className="h-4 w-4 text-gray-400" />
+                        )}
+                      </div>
+                    </th>
+                    <th 
+                      className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
+                      onClick={() => {
+                        if (sortField === 'status') {
+                          setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                        } else {
+                          setSortField('status');
+                          setSortDirection('asc');
+                        }
+                      }}
+                    >
+                      <div className="flex items-center gap-2">
+                        Status
+                        {sortField === 'status' ? (
+                          sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                        ) : (
+                          <ArrowUpDown className="h-4 w-4 text-gray-400" />
+                        )}
+                      </div>
+                    </th>
+                    <th 
+                      className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
+                      onClick={() => {
+                        if (sortField === 'created_at') {
+                          setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                        } else {
+                          setSortField('created_at');
+                          setSortDirection('desc');
+                        }
+                      }}
+                    >
+                      <div className="flex items-center gap-2">
+                        Created Date
+                        {sortField === 'created_at' ? (
+                          sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
+                        ) : (
+                          <ArrowUpDown className="h-4 w-4 text-gray-400" />
+                        )}
+                      </div>
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      Type
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      Language
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {transcriptions.map((transcription, index) => {
+                    const serialNumber = (currentPage - 1) * itemsPerPage + index + 1;
+                    return (
+                      <tr key={transcription._id} className="hover:bg-gray-50 cursor-pointer" onClick={() => fetchTranscriptionDetails(transcription._id)}>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {serialNumber}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <div className="flex items-center">
+                            <Database className="h-5 w-5 text-gray-400 mr-2" />
+                            <span className="text-sm font-medium text-gray-900">
+                              {transcription.filename || 'Untitled'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                              transcription.status === 'done'
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-yellow-100 text-yellow-800'
+                            }`}
+                          >
+                            {transcription.status === 'done' ? 'Done' : 'Pending'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {new Date(transcription.created_at).toLocaleDateString()}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${
+                            transcription.transcription_type === 'words'
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-purple-100 text-purple-800'
+                          }`}>
+                            {transcription.transcription_type}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {transcription.language}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => fetchTranscriptionDetails(transcription._id)}
+                              className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+                            >
+                              <FolderOpen className="h-4 w-4" />
+                              Load Transcription
+                            </button>
+                            {getUserInfo().isAdmin && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteTranscription(transcription._id);
+                                }}
+                                className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center"
+                                title="Delete transcription"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
           
           {/* Pagination Controls */}
