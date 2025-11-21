@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, ChevronDown, ChevronUp, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, BookmarkCheck } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, BookmarkCheck } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
@@ -101,6 +102,8 @@ interface SavedTranscriptionDocument {
 }
 
 function App() {
+  const { filename } = useParams<{ filename?: string }>();
+  const navigate = useNavigate();
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [referenceText, setReferenceText] = useState('');
@@ -120,7 +123,7 @@ function App() {
   const [selectedWordIndex, setSelectedWordIndex] = useState<number | null>(null);
   const [savingToDatabase, setSavingToDatabase] = useState(false);
   const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
-  const [isUploadFormExpanded, setIsUploadFormExpanded] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newFilename, setNewFilename] = useState('');
   const [savedTranscriptions, setSavedTranscriptions] = useState<SavedTranscriptionSummary[]>([]);
@@ -176,8 +179,24 @@ function App() {
   // Fetch languages on mount
   useEffect(() => {
     fetchLanguages();
-    fetchSavedTranscriptions();
-  }, [currentPage]);
+    if (!filename) {
+      fetchSavedTranscriptions();
+    }
+  }, [currentPage, filename]);
+
+  // Load transcription when filename is in URL
+  useEffect(() => {
+    if (filename) {
+      const decodedFilename = decodeURIComponent(filename);
+      loadTranscriptionByFilename(decodedFilename);
+    } else {
+      // Clear transcription data when navigating away from detail view
+      setTranscriptionData(null);
+      setAudioUrl('');
+      setCurrentTranscriptionId(null);
+      setHasChanges(false);
+    }
+  }, [filename]);
 
   const fetchSavedTranscriptions = async () => {
     setLoadingSaved(true);
@@ -212,52 +231,83 @@ function App() {
     }
   };
 
-  const loadSavedTranscription = async (id: string) => {
+  const loadTranscriptionByFilename = async (filenameToLoad: string) => {
     setLoadingSaved(true);
     try {
       const config = getAxiosConfig();
-      const response = await axios.get(`${API_BASE_URL}/api/transcriptions/${id}`, config);
+      // Fetch all transcriptions to find by filename
+      const response = await axios.get(
+        `${API_BASE_URL}/api/transcriptions?limit=1000&skip=0`,
+        config
+      );
       if (response.data.success) {
-        const doc: SavedTranscriptionDocument = response.data.data;
-        const transcriptionData = doc.transcription_data;
+        const allTranscriptions = response.data.data.transcriptions || [];
+        // Find transcription by filename
+        const transcription = allTranscriptions.find(
+          (t: SavedTranscriptionSummary) => t.filename === filenameToLoad && t.transcription_type === 'words'
+        );
+        
+        if (transcription) {
+          // Load the full transcription details
+          const detailResponse = await axios.get(`${API_BASE_URL}/api/transcriptions/${transcription._id}`, config);
+          if (detailResponse.data.success) {
+            const doc: SavedTranscriptionDocument = detailResponse.data.data;
+            const transcriptionData = doc.transcription_data;
 
-        if (transcriptionData.transcription_type === 'words' && transcriptionData.words) {
-          // Convert saved transcription to App's TranscriptionData format
-          const loadedData: TranscriptionData = {
-            words: transcriptionData.words,
-            language: transcriptionData.language,
-            audio_path: '', // Will be set from S3
-            audio_duration: transcriptionData.audio_duration,
-            total_words: transcriptionData.total_words || transcriptionData.words.length,
-            metadata: {
-              filename: transcriptionData.metadata?.filename || 'Loaded Transcription',
-              audio_path: '', // Will be set from S3
-            },
-          };
+            if (transcriptionData.transcription_type === 'words' && transcriptionData.words) {
+              // Convert saved transcription to App's TranscriptionData format
+              const loadedData: TranscriptionData = {
+                words: transcriptionData.words,
+                language: transcriptionData.language,
+                audio_path: '', // Will be set from S3
+                audio_duration: transcriptionData.audio_duration,
+                total_words: transcriptionData.total_words || transcriptionData.words.length,
+                metadata: {
+                  filename: transcriptionData.metadata?.filename || 'Loaded Transcription',
+                  audio_path: '', // Will be set from S3
+                },
+              };
 
-          setTranscriptionData(loadedData);
-          setCurrentTranscriptionId(doc._id);
+              setTranscriptionData(loadedData);
+              setCurrentTranscriptionId(doc._id);
 
-          // Set audio URL using proxy endpoint
-          if (doc.s3_metadata?.url) {
-            const s3Url = encodeURIComponent(doc.s3_metadata.url);
-            setAudioUrl(`${API_BASE_URL}/api/audio/s3-proxy?url=${s3Url}`);
-          } else if (doc.s3_metadata?.key) {
-            const s3Key = encodeURIComponent(doc.s3_metadata.key);
-            setAudioUrl(`${API_BASE_URL}/api/audio/s3-proxy?key=${s3Key}`);
+              // Set audio URL using proxy endpoint
+              if (doc.s3_metadata?.url) {
+                const s3Url = encodeURIComponent(doc.s3_metadata.url);
+                setAudioUrl(`${API_BASE_URL}/api/audio/s3-proxy?url=${s3Url}`);
+              } else if (doc.s3_metadata?.key) {
+                const s3Key = encodeURIComponent(doc.s3_metadata.key);
+                setAudioUrl(`${API_BASE_URL}/api/audio/s3-proxy?key=${s3Key}`);
+              }
+
+              setHasChanges(false);
+            }
+          } else {
+            alert(`Error: ${detailResponse.data.error}`);
+            navigate('/word-level');
           }
-
-          setHasChanges(false);
+        } else {
+          alert(`Transcription with filename "${filenameToLoad}" not found`);
+          navigate('/word-level');
         }
       } else {
         alert(`Error: ${response.data.error}`);
+        navigate('/word-level');
       }
     } catch (error: any) {
       console.error('Error loading transcription:', error);
       alert(`Error: ${error.response?.data?.error || error.message}`);
+      navigate('/word-level');
     } finally {
       setLoadingSaved(false);
     }
+  };
+
+  const loadSavedTranscription = async (_id: string, transcriptionFilename?: string) => {
+    // Navigate to the transcription detail route
+    const filenameToUse = transcriptionFilename || 'transcription';
+    const encodedFilename = encodeURIComponent(filenameToUse);
+    navigate(`/word-level/transcription/${encodedFilename}`);
   };
 
   const deleteSavedTranscription = async (id: string) => {
@@ -359,6 +409,7 @@ function App() {
         if (data.metadata?.audio_path) {
           setAudioUrl(`${API_BASE_URL}${data.metadata.audio_path}`);
         }
+        setIsUploadModalOpen(false); // Close modal after successful transcription
       } else {
         alert(`Error: ${response.data.error}`);
       }
@@ -851,33 +902,48 @@ function App() {
     <main className="min-h-screen p-8 bg-gradient-to-br from-blue-50 to-purple-50">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">
-            Word-Level Transcription Module
-          </h1>
-          <p className="text-gray-600">Upload audio, transcribe, and edit word-level timestamps</p>
+        <div className="flex items-center justify-between mb-8">
+          <div className="text-center flex-1">
+            <h1 className="text-4xl font-bold text-gray-800 mb-2">
+              Word-Level Transcription Module
+            </h1>
+            <p className="text-gray-600">Upload audio, transcribe, and edit word-level timestamps</p>
+          </div>
+          {!transcriptionData && getUserInfo().isAdmin && (
+            <button
+              onClick={() => setIsUploadModalOpen(true)}
+              className="ml-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+            >
+              <Upload className="h-5 w-5" />
+              Upload Audio
+            </button>
+          )}
         </div>
 
-        {/* Upload Section */}
-        {!transcriptionData && (
-          <div className="bg-white rounded-lg shadow-xl mb-8 max-w-2xl mx-auto overflow-hidden">
-            {/* Collapsible Header */}
-            <button
-              onClick={() => setIsUploadFormExpanded(!isUploadFormExpanded)}
-              className="w-full p-8 flex items-center justify-between hover:bg-gray-50 transition-colors"
-            >
-              <h2 className="text-2xl font-semibold text-gray-800">Upload Audio File</h2>
-              {isUploadFormExpanded ? (
-                <ChevronUp className="h-6 w-6 text-gray-600" />
-              ) : (
-                <ChevronDown className="h-6 w-6 text-gray-600" />
-              )}
-            </button>
-            
-            {/* Collapsible Content */}
-            <div className={`px-8 pb-8 transition-all duration-300 ease-in-out ${
-              isUploadFormExpanded ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0 overflow-hidden'
-            }`}>
+        {/* Upload Modal */}
+        {isUploadModalOpen && getUserInfo().isAdmin && (
+          <div 
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setIsUploadModalOpen(false);
+              }
+            }}
+          >
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+              {/* Modal Header */}
+              <div className="sticky top-0 bg-white border-b border-gray-200 px-8 py-4 flex items-center justify-between">
+                <h2 className="text-2xl font-semibold text-gray-800">Upload Audio File</h2>
+                <button
+                  onClick={() => setIsUploadModalOpen(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  <X className="h-6 w-6" />
+                </button>
+              </div>
+              
+              {/* Modal Content */}
+              <div className="px-8 pb-8 mt-4">
             {/* Audio File Upload and Reference Text Side by Side */}
             <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Audio File Upload */}
@@ -963,6 +1029,7 @@ function App() {
                 </>
               )}
             </button>
+              </div>
             </div>
           </div>
         )}
@@ -986,11 +1053,12 @@ function App() {
             ) : (
               <>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {savedTranscriptions.map((transcription) => {
+                {savedTranscriptions.map((transcription, index) => {
                   const { id: currentUserId, isAdmin } = getUserInfo();
                   // Compare user_id as strings to handle type differences
                   const isSavedByUser = !isAdmin && currentUserId && transcription.user_id && 
                     String(transcription.user_id) === String(currentUserId);
+                  const serialNumber = (currentPage - 1) * itemsPerPage + index + 1;
                   
                   return (
                   <div
@@ -998,28 +1066,35 @@ function App() {
                     className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
                   >
                     <div className="flex items-start justify-between mb-2">
-                      <h3 className="font-semibold text-gray-800 text-sm truncate flex-1 flex items-center gap-2">
-                        {transcription.filename || 'Untitled'}
+                      <div className="flex items-center gap-2 flex-1">
+                        <span className="text-xs font-bold text-gray-500 bg-gray-200 px-2 py-1 rounded">
+                          #{serialNumber}
+                        </span>
+                        <h3 className="font-semibold text-gray-800 text-sm truncate flex-1 flex items-center gap-2">
+                          {transcription.filename || 'Untitled'}
                         {isSavedByUser && (
                           <span 
-                            title="Saved by you"
+                            title="Completed by you"
                             className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-300 flex-shrink-0"
                           >
                             <BookmarkCheck className="h-3 w-3" />
-                            <span className="text-xs font-medium">Saved</span>
+                            <span className="text-xs font-medium">Completed</span>
                           </span>
                         )}
-                      </h3>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteSavedTranscription(transcription._id);
-                        }}
-                        className="ml-2 text-red-600 hover:text-red-800 p-1"
-                        title="Delete"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                        </h3>
+                      </div>
+                      {getUserInfo().isAdmin && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteSavedTranscription(transcription._id);
+                          }}
+                          className="ml-2 text-red-600 hover:text-red-800 p-1"
+                          title="Delete"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                     <div className="text-xs text-gray-600 space-y-1 mb-3">
                       <div className="flex justify-between">
@@ -1040,7 +1115,7 @@ function App() {
                       </div>
                     </div>
                     <button
-                      onClick={() => loadSavedTranscription(transcription._id)}
+                      onClick={() => loadSavedTranscription(transcription._id, transcription.filename)}
                       disabled={loadingSaved}
                       className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
                     >
@@ -1168,16 +1243,18 @@ function App() {
                           <span className="text-sm text-gray-600">
                             File: {transcriptionData.metadata.filename}
                           </span>
-                          <button
-                            onClick={() => {
-                              setNewFilename(transcriptionData.metadata?.filename || '');
-                              setIsRenaming(true);
-                            }}
-                            className="text-blue-600 hover:text-blue-800"
-                            title="Rename file"
-                          >
-                            <Edit className="h-4 w-4" />
-                          </button>
+                          {getUserInfo().isAdmin && (
+                            <button
+                              onClick={() => {
+                                setNewFilename(transcriptionData.metadata?.filename || '');
+                                setIsRenaming(true);
+                              }}
+                              className="text-blue-600 hover:text-blue-800"
+                              title="Rename file"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1229,18 +1306,15 @@ function App() {
                   </button>
                   <button
                     onClick={() => {
-                      const confirmReset = window.confirm('Start a new transcription? Unsaved changes will be lost.');
-                      if (!confirmReset) return;
-                      setTranscriptionData(null);
-                      setAudioFile(null);
-                      setReferenceFile(null);
-                      setReferenceText('');
-                      setHasChanges(false);
-                      setCurrentTranscriptionId(null);
+                      if (hasChanges) {
+                        const confirmReset = window.confirm('Discard changes and go back?');
+                        if (!confirmReset) return;
+                      }
+                      navigate('/word-level');
                     }}
                     className="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
                   >
-                    New Transcription
+                    Close
                   </button>
                 </div>
               </div>
@@ -1289,7 +1363,7 @@ function App() {
             </div>
 
             {/* Audio Player */}
-            <div className="bg-white rounded-lg shadow-lg p-6">
+            <div className="sticky top-0 z-50 bg-white rounded-lg shadow-lg p-6">
               <h3 className="text-lg font-semibold mb-3 text-gray-800">Audio Player</h3>
               <AudioWaveformPlayer
                 ref={playerRef}

@@ -651,16 +651,18 @@ function SavedTranscriptions() {
                   <div>
                     <h1 className="text-4xl font-bold text-gray-800 mb-2 flex items-center gap-2">
                       {selectedTranscription.transcription_data.metadata?.filename || 'Saved Transcription'}
-                      <button
-                        onClick={() => {
-                          setNewFilename(selectedTranscription.transcription_data.metadata?.filename || 'Untitled');
-                          setIsRenaming(true);
-                        }}
-                        className="text-indigo-600 hover:text-indigo-800"
-                        title="Rename file"
-                      >
-                        <Edit className="h-5 w-5" />
-                      </button>
+                      {getUserInfo().isAdmin && (
+                        <button
+                          onClick={() => {
+                            setNewFilename(selectedTranscription.transcription_data.metadata?.filename || 'Untitled');
+                            setIsRenaming(true);
+                          }}
+                          className="text-indigo-600 hover:text-indigo-800"
+                          title="Rename file"
+                        >
+                          <Edit className="h-5 w-5" />
+                        </button>
+                      )}
                     </h1>
                     <p className="text-gray-600">
                       Created: {new Date(selectedTranscription.created_at).toLocaleString()}
@@ -695,23 +697,25 @@ function SavedTranscriptions() {
                   <Download className="h-4 w-4 mr-2" />
                   Download
                 </button>
-                <button
-                  onClick={() => selectedTranscription && deleteTranscription(selectedTranscription._id)}
-                  disabled={deleting}
-                  className="bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
-                >
-                  {deleting ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Deleting...
-                    </>
-                  ) : (
-                    <>
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Delete
-                    </>
-                  )}
-                </button>
+                {getUserInfo().isAdmin && (
+                  <button
+                    onClick={() => selectedTranscription && deleteTranscription(selectedTranscription._id)}
+                    disabled={deleting}
+                    className="bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
+                  >
+                    {deleting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Delete
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -748,7 +752,7 @@ function SavedTranscriptions() {
 
           {/* Audio Player */}
           {audioUrl && (
-            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <div className="sticky top-0 z-50 bg-white rounded-lg shadow-lg p-6 mb-6">
               <h3 className="text-lg font-semibold mb-3 text-gray-800">Audio Player</h3>
               <AudioWaveformPlayer
                 ref={playerRef}
@@ -1014,16 +1018,23 @@ function SavedTranscriptions() {
         ) : (
           <>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {transcriptions.map((transcription) => (
+            {transcriptions.map((transcription, index) => {
+              const serialNumber = (currentPage - 1) * itemsPerPage + index + 1;
+              return (
               <div
                 key={transcription._id}
                 onClick={() => fetchTranscriptionDetails(transcription._id)}
                 className="bg-white rounded-lg shadow-lg p-6 cursor-pointer hover:shadow-xl transition-shadow"
               >
                 <div className="flex items-center justify-between mb-4">
-                  <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800 capitalize">
-                    {transcription.transcription_type}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-gray-500 bg-gray-200 px-2 py-1 rounded">
+                      #{serialNumber}
+                    </span>
+                    <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800 capitalize">
+                      {transcription.transcription_type}
+                    </span>
+                  </div>
                   <span className="text-xs text-gray-500">
                     {new Date(transcription.created_at).toLocaleDateString()}
                   </span>
@@ -1060,19 +1071,22 @@ function SavedTranscriptions() {
                     <Play className="h-4 w-4 mr-2" />
                     View Details
                   </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteTranscription(transcription._id);
-                    }}
-                    className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center"
-                    title="Delete transcription"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  {getUserInfo().isAdmin && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteTranscription(transcription._id);
+                      }}
+                      className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center"
+                      title="Delete transcription"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
           
           {/* Pagination Controls */}

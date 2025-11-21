@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Users, FileText, UserCheck, UserX, Loader2, Search, Check, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square } from 'lucide-react';
+import { Users, FileText, UserCheck, UserX, Loader2, Search, Check, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
 
@@ -70,6 +70,7 @@ function AdminPanel() {
   const [bulkAssigning, setBulkAssigning] = useState(false);
   const [languageFilter, setLanguageFilter] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
+  const [downloading, setDownloading] = useState(false);
 
   const { isAdmin } = getUserInfo();
 
@@ -299,6 +300,54 @@ function AdminPanel() {
     }
   };
 
+  const handleDownloadDoneTranscriptions = async () => {
+    setDownloading(true);
+    try {
+      const config = getAxiosConfig();
+      
+      // Make request to download endpoint with responseType: 'blob' for binary data
+      const response = await axios.get(
+        `${API_BASE_URL}/api/admin/transcriptions/download-done`,
+        {
+          ...config,
+          responseType: 'blob'
+        }
+      );
+
+      // Create a blob URL and trigger download
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      
+      // Get filename from Content-Disposition header or use default
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = 'done_transcriptions.zip';
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+      
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      setMessage({ type: 'success', text: 'Download completed successfully' });
+    } catch (error: any) {
+      console.error('❌ Error downloading transcriptions:', error);
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to download transcriptions';
+      setMessage({ type: 'error', text: errorMessage });
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const getUserName = (userId: string | undefined) => {
     if (!userId) return 'Unassigned';
     const user = users.find(u => u._id === userId);
@@ -414,6 +463,24 @@ function AdminPanel() {
                 <p className="text-gray-600 mt-2">Manage transcription assignments</p>
               </div>
             </div>
+            <button
+              onClick={handleDownloadDoneTranscriptions}
+              disabled={downloading}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Download all done transcriptions as ZIP"
+            >
+              {downloading ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <span className="hidden sm:inline">Downloading...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="h-5 w-5" />
+                  <span className="hidden sm:inline">Download Done Files</span>
+                </>
+              )}
+            </button>
           </div>
 
           {message && (
@@ -580,6 +647,9 @@ function AdminPanel() {
                         )}
                       </button>
                     </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider w-16">
+                      S.No.
+                    </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
                       Filename
                     </th>
@@ -606,12 +676,12 @@ function AdminPanel() {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {paginatedTranscriptions.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
                         {searchTerm ? 'No transcriptions match your search' : 'No transcriptions found'}
                       </td>
                     </tr>
                   ) : (
-                    paginatedTranscriptions.map((transcription) => (
+                    paginatedTranscriptions.map((transcription, index) => (
                       <tr key={transcription._id} className={`hover:bg-gray-50 ${selectedTranscriptions.has(transcription._id) ? 'bg-blue-50' : ''}`}>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <button
@@ -624,6 +694,9 @@ function AdminPanel() {
                               <Square className="h-5 w-5 text-gray-400" />
                             )}
                           </button>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {(currentPage - 1) * itemsPerPage + index + 1}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <div className="flex items-center">

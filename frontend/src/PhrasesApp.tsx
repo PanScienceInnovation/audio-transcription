@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Users, Smile, Database, ChevronDown, ChevronUp, Edit, FolderOpen, Trash2, ChevronLeft, ChevronRight, BookmarkCheck } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Users, Smile, Database, Edit, FolderOpen, Trash2, ChevronLeft, ChevronRight, BookmarkCheck } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
@@ -132,7 +132,7 @@ function PhrasesApp() {
   const [hasChanges, setHasChanges] = useState(false);
   const [savingToDatabase, setSavingToDatabase] = useState(false);
   const [currentTranscriptionId, setCurrentTranscriptionId] = useState<string | null>(null);
-  const [isUploadFormExpanded, setIsUploadFormExpanded] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newFilename, setNewFilename] = useState('');
   const [savedTranscriptions, setSavedTranscriptions] = useState<SavedTranscriptionSummary[]>([]);
@@ -320,6 +320,7 @@ function PhrasesApp() {
         } else {
           setAudioDuration(null);
         }
+        setIsUploadModalOpen(false); // Close modal after successful transcription
       } else {
         alert(`Error: ${response.data.error}`);
       }
@@ -705,33 +706,48 @@ function PhrasesApp() {
     <main className="min-h-screen p-8 bg-gradient-to-br from-purple-50 to-pink-50">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">
-            Phrase-Level Transcription Module
-          </h1>
-          <p className="text-gray-600">Speaker diarization, emotion detection, and phrase-level editing</p>
+        <div className="flex items-center justify-between mb-8">
+          <div className="text-center flex-1">
+            <h1 className="text-4xl font-bold text-gray-800 mb-2">
+              Phrase-Level Transcription Module
+            </h1>
+            <p className="text-gray-600">Speaker diarization, emotion detection, and phrase-level editing</p>
+          </div>
+          {!transcriptionData && getUserInfo().isAdmin && (
+            <button
+              onClick={() => setIsUploadModalOpen(true)}
+              className="ml-4 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+            >
+              <Upload className="h-5 w-5" />
+              Upload Audio
+            </button>
+          )}
         </div>
 
-        {/* Upload Section */}
-        {!transcriptionData && (
-          <div className="bg-white rounded-lg shadow-xl mb-8 max-w-2xl mx-auto overflow-hidden">
-            {/* Collapsible Header */}
-            <button
-              onClick={() => setIsUploadFormExpanded(!isUploadFormExpanded)}
-              className="w-full p-8 flex items-center justify-between hover:bg-gray-50 transition-colors"
-            >
-              <h2 className="text-2xl font-semibold text-gray-800">Upload Audio File</h2>
-              {isUploadFormExpanded ? (
-                <ChevronUp className="h-6 w-6 text-gray-600" />
-              ) : (
-                <ChevronDown className="h-6 w-6 text-gray-600" />
-              )}
-            </button>
-            
-            {/* Collapsible Content */}
-            <div className={`px-8 pb-8 transition-all duration-300 ease-in-out ${
-              isUploadFormExpanded ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0 overflow-hidden'
-            }`}>
+        {/* Upload Modal */}
+        {isUploadModalOpen && getUserInfo().isAdmin && (
+          <div 
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setIsUploadModalOpen(false);
+              }
+            }}
+          >
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+              {/* Modal Header */}
+              <div className="sticky top-0 bg-white border-b border-gray-200 px-8 py-4 flex items-center justify-between">
+                <h2 className="text-2xl font-semibold text-gray-800">Upload Audio File</h2>
+                <button
+                  onClick={() => setIsUploadModalOpen(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  <X className="h-6 w-6" />
+                </button>
+              </div>
+              
+              {/* Modal Content */}
+              <div className="px-8 pb-8">
             {/* Audio File Upload and Reference Text Side by Side */}
             <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Audio File Upload */}
@@ -817,6 +833,7 @@ function PhrasesApp() {
                 </>
               )}
             </button>
+              </div>
             </div>
           </div>
         )}
@@ -836,11 +853,12 @@ function PhrasesApp() {
             ) : (
               <>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {savedTranscriptions.map((transcription) => {
+                {savedTranscriptions.map((transcription, index) => {
                   const { id: currentUserId, isAdmin } = getUserInfo();
                   // Compare user_id as strings to handle type differences
                   const isSavedByUser = !isAdmin && currentUserId && transcription.user_id && 
                     String(transcription.user_id) === String(currentUserId);
+                  const serialNumber = (currentPage - 1) * itemsPerPage + index + 1;
                   
                   return (
                   <div
@@ -848,28 +866,35 @@ function PhrasesApp() {
                     className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
                   >
                     <div className="flex items-start justify-between mb-2">
-                      <h3 className="font-semibold text-gray-800 text-sm truncate flex-1 flex items-center gap-2">
-                        {transcription.filename || 'Untitled'}
+                      <div className="flex items-center gap-2 flex-1">
+                        <span className="text-xs font-bold text-gray-500 bg-gray-200 px-2 py-1 rounded">
+                          #{serialNumber}
+                        </span>
+                        <h3 className="font-semibold text-gray-800 text-sm truncate flex-1 flex items-center gap-2">
+                          {transcription.filename || 'Untitled'}
                         {isSavedByUser && (
                           <span 
-                            title="Saved by you"
+                            title="Completed by you"
                             className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-300 flex-shrink-0"
                           >
                             <BookmarkCheck className="h-3 w-3" />
-                            <span className="text-xs font-medium">Saved</span>
+                            <span className="text-xs font-medium">Completed</span>
                           </span>
                         )}
-                      </h3>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteSavedTranscription(transcription._id);
-                        }}
-                        className="ml-2 text-red-600 hover:text-red-800 p-1"
-                        title="Delete"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                        </h3>
+                      </div>
+                      {getUserInfo().isAdmin && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteSavedTranscription(transcription._id);
+                          }}
+                          className="ml-2 text-red-600 hover:text-red-800 p-1"
+                          title="Delete"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                     <div className="text-xs text-gray-600 space-y-1 mb-3">
                       <div className="flex justify-between">
@@ -1018,16 +1043,18 @@ function PhrasesApp() {
                           <span className="text-sm text-gray-600">
                             File: {transcriptionData.metadata.filename}
                           </span>
-                          <button
-                            onClick={() => {
-                              setNewFilename(transcriptionData.metadata?.filename || '');
-                              setIsRenaming(true);
-                            }}
-                            className="text-purple-600 hover:text-purple-800"
-                            title="Rename file"
-                          >
-                            <Edit className="h-4 w-4" />
-                          </button>
+                          {getUserInfo().isAdmin && (
+                            <button
+                              onClick={() => {
+                                setNewFilename(transcriptionData.metadata?.filename || '');
+                                setIsRenaming(true);
+                              }}
+                              className="text-purple-600 hover:text-purple-800"
+                              title="Rename file"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1091,7 +1118,7 @@ function PhrasesApp() {
                     }}
                     className="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
                   >
-                    New Transcription
+                    Close
                   </button>
                 </div>
               </div>
@@ -1122,7 +1149,7 @@ function PhrasesApp() {
             </div>
 
             {/* Audio Player */}
-            <div className="bg-white rounded-lg shadow-lg p-6">
+            <div className="sticky top-0 z-50 bg-white rounded-lg shadow-lg p-6">
               <h3 className="text-lg font-semibold mb-3 text-gray-800">Audio Player</h3>
               <AudioWaveformPlayer
                 ref={playerRef}

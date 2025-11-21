@@ -88,6 +88,14 @@ function AppWithAuth() {
         } 
       />
       <Route
+        path="/word-level/transcription/:filename"
+        element={
+          <ProtectedRoute>
+            <MainApp onSignOut={handleSignOut} />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/word-level/*"
         element={
           <ProtectedRoute>

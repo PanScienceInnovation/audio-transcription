@@ -41,7 +41,7 @@ function MainApp({ onSignOut }: MainAppProps) {
       <div className="bg-white shadow-sm border-b border-gray-200 px-4 py-3 mb-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-1">
-            <button
+            {/* <button
               onClick={() => navigate('/word-level')}
               className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${isWordLevel
                   ? 'bg-blue-600 text-white shadow-lg'
@@ -50,8 +50,8 @@ function MainApp({ onSignOut }: MainAppProps) {
             >
               <Mic2 className="h-5 w-5" />
               Word-Level
-            </button>
-            <button
+            </button> */}
+            {/* <button
               onClick={() => navigate('/phrase-level')}
               className={`flex items-center gap-2 px-5 py-2 rounded-full font-medium transition-all ${isPhraseLevel
                   ? 'bg-purple-600 text-white shadow-lg'
@@ -60,7 +60,7 @@ function MainApp({ onSignOut }: MainAppProps) {
             >
               <MessageSquare className="h-5 w-5" />
               Phrase-Level
-            </button>
+            </button> */}
             {isAdmin && (
               <button
                 onClick={() => navigate('/admin')}
