@@ -599,14 +599,15 @@ class StorageManager:
                     edited_words_count = sum(1 for word in words if word.get('is_edited', False))
                 
                 # Determine status:
-                # - "done" only if file is assigned AND user has saved changes (user_id exists)
-                # - "pending" if not assigned, or assigned but user hasn't saved changes yet
+                # - "done" only if file is assigned AND the assigned user has saved changes (user_id matches assigned_user_id)
+                # - "pending" if not assigned, or assigned but assigned user hasn't saved changes yet
                 assigned_user_id = doc.get('assigned_user_id')
                 user_id = doc.get('user_id')
-                if assigned_user_id and user_id:
-                    status = 'done'  # Assigned and user has saved changes
+                # Status is "done" only if assigned AND the user_id matches assigned_user_id (meaning assigned user saved)
+                if assigned_user_id and user_id and str(assigned_user_id) == str(user_id):
+                    status = 'done'  # Assigned and assigned user has saved changes
                 else:
-                    status = 'pending'  # Not assigned, or assigned but not saved yet
+                    status = 'pending'  # Not assigned, or assigned but assigned user hasn't saved yet
                 
                 summary = {
                     '_id': doc['_id'],

@@ -1378,10 +1378,13 @@ def download_done_transcriptions():
             }), 500
         
         # Query for transcriptions with status 'done'
-        # Status 'done' means: assigned_user_id exists AND user_id exists
+        # Status 'done' means: assigned_user_id exists AND user_id matches assigned_user_id
+        # (meaning the assigned user has saved changes)
+        # Note: Both fields are stored as strings, so we can compare them directly
         query_filter = {
             'assigned_user_id': {'$ne': None, '$exists': True},
-            'user_id': {'$ne': None, '$exists': True}
+            'user_id': {'$ne': None, '$exists': True},
+            '$expr': {'$eq': ['$assigned_user_id', '$user_id']}
         }
         
         # Get all done transcriptions
