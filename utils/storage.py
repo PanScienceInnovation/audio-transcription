@@ -500,6 +500,79 @@ class StorageManager:
                 'error': f"Error unassigning transcription: {str(e)}"
             }
     
+    def flag_transcription(self, document_id: str, is_flagged: bool = True, flag_reason: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Flag or unflag a transcription.
+        
+        Args:
+            document_id: MongoDB document ID
+            is_flagged: Boolean to set flag state
+            flag_reason: Optional reason for flagging
+            
+        Returns:
+            Dictionary with update result
+        """
+        try:
+            if not self.collection:
+                return {
+                    'success': False,
+                    'error': 'MongoDB not initialized'
+                }
+            
+            from bson import ObjectId
+            from bson.errors import InvalidId
+            
+            # Validate and convert ObjectId
+            try:
+                obj_id = ObjectId(document_id)
+            except (InvalidId, ValueError) as e:
+                return {
+                    'success': False,
+                    'error': f'Invalid transcription ID format: {str(e)}'
+                }
+            
+            # Update fields
+            update_fields = {
+                'is_flagged': is_flagged,
+                'updated_at': datetime.now(timezone.utc)
+            }
+            
+            if is_flagged and flag_reason:
+                update_fields['flag_reason'] = flag_reason
+            elif not is_flagged:
+                # Remove flag_reason if unflagging
+                update_fields['flag_reason'] = None
+            
+            # Update the document
+            update_result = self.collection.update_one(
+                {'_id': obj_id},
+                {
+                    '$set': update_fields
+                }
+            )
+            
+            if update_result.matched_count == 0:
+                return {
+                    'success': False,
+                    'error': 'Transcription not found'
+                }
+            
+            print(f"✅ {'Flagged' if is_flagged else 'Unflagged'} transcription {document_id}")
+            
+            return {
+                'success': True,
+                'document_id': document_id,
+                'is_flagged': is_flagged,
+                'flag_reason': flag_reason if is_flagged else None,
+                'message': f"Transcription {'flagged' if is_flagged else 'unflagged'} successfully"
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Error flagging transcription: {str(e)}"
+            }
+
     def list_transcriptions(self, limit: int = 100, skip: int = 0, user_id: Optional[str] = None, is_admin: bool = False) -> Dict[str, Any]:
         """
         List transcriptions from MongoDB.
@@ -599,12 +672,17 @@ class StorageManager:
                     edited_words_count = sum(1 for word in words if word.get('is_edited', False))
                 
                 # Determine status:
+                # - "flagged" if is_flagged is True (highest priority)
                 # - "done" only if file is assigned AND the assigned user has saved changes (user_id matches assigned_user_id)
                 # - "pending" if not assigned, or assigned but assigned user hasn't saved changes yet
+                is_flagged = doc.get('is_flagged', False)
                 assigned_user_id = doc.get('assigned_user_id')
                 user_id = doc.get('user_id')
+                
+                if is_flagged:
+                    status = 'flagged'
                 # Status is "done" only if assigned AND the user_id matches assigned_user_id (meaning assigned user saved)
-                if assigned_user_id and user_id and str(assigned_user_id) == str(user_id):
+                elif assigned_user_id and user_id and str(assigned_user_id) == str(user_id):
                     status = 'done'  # Assigned and assigned user has saved changes
                 else:
                     status = 'pending'  # Not assigned, or assigned but assigned user hasn't saved yet
@@ -622,7 +700,9 @@ class StorageManager:
                     'filename': display_filename,
                     'user_id': doc.get('user_id'),  # Creator/saver
                     'assigned_user_id': doc.get('assigned_user_id'),  # Assigned user
-                    'status': status,  # 'done' or 'pending'
+                    'status': status,  # 'done', 'pending', or 'flagged'
+                    'is_flagged': is_flagged,
+                    'flag_reason': doc.get('flag_reason'),
                     'edited_words_count': edited_words_count  # Number of words edited
                 }
                 transcriptions.append(summary)

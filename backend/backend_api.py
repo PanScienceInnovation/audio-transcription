@@ -1112,6 +1112,53 @@ def update_transcription_by_id(transcription_id):
         }), 500
 
 
+@app.route('/api/transcriptions/<transcription_id>/flag', methods=['POST'])
+def flag_transcription(transcription_id):
+    """
+    Flag or unflag a transcription.
+    
+    JSON Body:
+        - is_flagged: Boolean (true to flag, false to unflag)
+        - flag_reason: String (optional, required if is_flagged is true)
+    """
+    try:
+        data = request.get_json()
+        if not data or 'is_flagged' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'is_flagged is required'
+            }), 400
+        
+        is_flagged = bool(data['is_flagged'])
+        flag_reason = data.get('flag_reason')
+        
+        result = storage_manager.flag_transcription(transcription_id, is_flagged, flag_reason)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'message': result.get('message', 'Transcription flag updated'),
+                'document_id': result.get('document_id'),
+                'is_flagged': result.get('is_flagged'),
+                'flag_reason': result.get('flag_reason')
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to flag transcription')
+            }), 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error flagging transcription: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/transcriptions/<transcription_id>/assign', methods=['POST'])
 def assign_transcription(transcription_id):
     """

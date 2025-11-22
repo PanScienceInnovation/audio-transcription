@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, Search, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, Search, ArrowUpDown, ArrowUp, ArrowDown, Flag } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
@@ -60,6 +60,7 @@ interface TranscriptionData {
     filename?: string;
     source_language?: string;
     audio_path?: string;
+    flag_reason?: string;
   };
 }
 
@@ -76,7 +77,9 @@ interface SavedTranscriptionSummary {
   filename: string;
   user_id?: string;
   assigned_user_id?: string;
-  status?: 'done' | 'pending';
+  status?: 'done' | 'pending' | 'flagged';
+  is_flagged?: boolean;
+  flag_reason?: string;
 }
 
 interface SavedTranscriptionDocument {
@@ -145,6 +148,9 @@ function App() {
   const [dateFilter, setDateFilter] = useState<string>('');
   const [sortField, setSortField] = useState<'filename' | 'status' | 'created_at'>('created_at');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [flagging, setFlagging] = useState<string | null>(null);
+  const [showFlagDropdown, setShowFlagDropdown] = useState<string | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -420,6 +426,35 @@ function App() {
     } catch (error: any) {
       console.error('Error deleting transcription:', error);
       alert(`Error: ${error.response?.data?.error || error.message}`);
+    }
+  };
+
+  const handleFlagTranscription = async (transcriptionId: string, currentFlagged: boolean, reason?: string) => {
+    setFlagging(transcriptionId);
+    setShowFlagDropdown(null);
+    try {
+      const config = getAxiosConfig();
+      const newFlaggedState = !currentFlagged;
+      
+      const response = await axios.post(
+        `${API_BASE_URL}/api/transcriptions/${transcriptionId}/flag`,
+        { 
+          is_flagged: newFlaggedState,
+          flag_reason: newFlaggedState ? reason : null
+        },
+        config
+      );
+
+      if (response.data.success) {
+        fetchSavedTranscriptions(); // Reload data
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error flagging transcription:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setFlagging(null);
     }
   };
 
@@ -1146,6 +1181,7 @@ function App() {
                     <option value="">All Status</option>
                     <option value="done">Done</option>
                     <option value="pending">Pending</option>
+                    <option value="flagged">Flagged</option>
                   </select>
                   <select
                     value={languageFilter}
@@ -1293,10 +1329,12 @@ function App() {
                                   className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                                     transcription.status === 'done'
                                       ? 'bg-green-100 text-green-800'
+                                      : transcription.status === 'flagged'
+                                      ? 'bg-red-100 text-red-800'
                                       : 'bg-yellow-100 text-yellow-800'
                                   }`}
                                 >
-                                  {transcription.status === 'done' ? 'Done' : 'Pending'}
+                                  {transcription.status === 'done' ? 'Done' : transcription.status === 'flagged' ? 'Flagged' : 'Pending'}
                                 </span>
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
@@ -1306,14 +1344,62 @@ function App() {
                                 {transcription.language}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                    <button
-                      onClick={() => loadSavedTranscription(transcription._id, transcription.filename)}
-                      disabled={loadingSaved}
-                                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
-                    >
-                      <FolderOpen className="h-4 w-4" />
-                      Load Transcription
-                    </button>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => loadSavedTranscription(transcription._id, transcription.filename)}
+                                    disabled={loadingSaved}
+                                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
+                                  >
+                                    <FolderOpen className="h-4 w-4" />
+                                    Load Transcription
+                                  </button>
+                                  <div className="relative">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (transcription.is_flagged) {
+                                          handleFlagTranscription(transcription._id, true);
+                                        } else {
+                                          if (showFlagDropdown === transcription._id) {
+                                            setShowFlagDropdown(null);
+                                          } else {
+                                            const rect = e.currentTarget.getBoundingClientRect();
+                                            setDropdownPosition({
+                                              top: rect.bottom + 5,
+                                              right: window.innerWidth - rect.right
+                                            });
+                                            setShowFlagDropdown(transcription._id);
+                                          }
+                                        }
+                                      }}
+                                      disabled={flagging === transcription._id}
+                                      className={`font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center ${
+                                        transcription.is_flagged
+                                          ? 'bg-red-100 text-red-600 hover:bg-red-200'
+                                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                      }`}
+                                      title={transcription.is_flagged ? "Unflag transcription" : "Flag transcription"}
+                                    >
+                                      {flagging === transcription._id ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : (
+                                        <Flag className={`h-4 w-4 ${transcription.is_flagged ? 'fill-current' : ''}`} />
+                                      )}
+                                    </button>
+                                  </div>
+                                  {getUserInfo().isAdmin && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        deleteSavedTranscription(transcription._id);
+                                      }}
+                                      className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center"
+                                      title="Delete transcription"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                </div>
                               </td>
                             </tr>
                   );
@@ -1432,25 +1518,47 @@ function App() {
                   ) : (
                     <div>
                       <h2 className="text-2xl font-semibold text-gray-800">Transcription Results</h2>
-                      {transcriptionData.metadata?.filename && (
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className="text-sm text-gray-600">
-                            File: {transcriptionData.metadata.filename}
-                          </span>
-                          {getUserInfo().isAdmin && (
-                            <button
-                              onClick={() => {
-                                setNewFilename(transcriptionData.metadata?.filename || '');
-                                setIsRenaming(true);
-                              }}
-                              className="text-blue-600 hover:text-blue-800"
-                              title="Rename file"
-                            >
-                              <Edit className="h-4 w-4" />
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      <div className="flex flex-col gap-1 mt-1">
+                        {transcriptionData.metadata?.filename && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-gray-600">
+                              File: {transcriptionData.metadata.filename}
+                            </span>
+                            {getUserInfo().isAdmin && (
+                              <button
+                                onClick={() => {
+                                  setNewFilename(transcriptionData.metadata?.filename || '');
+                                  setIsRenaming(true);
+                                }}
+                                className="text-blue-600 hover:text-blue-800"
+                                title="Rename file"
+                              >
+                                <Edit className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        
+                        {/* Display flag reason if available from saved data */}
+                        {(() => {
+                          // We need to find the saved transcription record to get the flag reason
+                          // since it's not part of transcriptionData structure usually
+                          const savedRecord = allSavedTranscriptions.find(t => 
+                            t.filename === transcriptionData.metadata?.filename || 
+                            t._id === currentTranscriptionId
+                          );
+                          
+                          if (savedRecord && (savedRecord as any).is_flagged) {
+                            return (
+                              <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800 border border-red-200 self-start">
+                                <Flag className="h-4 w-4 mr-1 fill-current" />
+                                Flagged: {(savedRecord as any).flag_reason || 'No reason provided'}
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1792,6 +1900,42 @@ function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* Fixed Flag Dropdown */}
+        {showFlagDropdown && dropdownPosition && (
+          <>
+            <div className="fixed inset-0 z-[100]" onClick={() => setShowFlagDropdown(null)}></div>
+            <div
+              className="fixed w-64 bg-white rounded-lg shadow-xl border border-gray-200 z-[101] overflow-hidden"
+              style={{
+                top: dropdownPosition.top,
+                right: dropdownPosition.right,
+              }}
+            >
+              <div className="p-2 border-b border-gray-100 bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Select Reason
+              </div>
+              <div className="py-1">
+                {[
+                  "Transcribed Word not seperated",
+                  "Transcribed words repeated",
+                  "Missing transcribed words"
+                ].map((reason) => (
+                  <button
+                    key={reason}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleFlagTranscription(showFlagDropdown, false, reason);
+                    }}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 hover:text-gray-900"
+                  >
+                    {reason}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
         )}
       </div>
     </main>

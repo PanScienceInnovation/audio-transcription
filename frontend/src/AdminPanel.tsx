@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Users, FileText, UserCheck, UserX, Loader2, Search, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download } from 'lucide-react';
+import { Users, FileText, UserCheck, UserX, Loader2, Search, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download, Trash2, Flag } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
 
@@ -48,10 +48,11 @@ interface Transcription {
   language: string;
   assigned_user_id?: string;
   user_id?: string;
-  status?: 'done' | 'pending';
+  status?: 'done' | 'pending' | 'flagged';
   edited_words_count?: number;
   total_words?: number;
   transcription_type?: 'words' | 'phrases';
+  is_flagged?: boolean;
 }
 
 function AdminPanel() {
@@ -71,6 +72,10 @@ function AdminPanel() {
   const [languageFilter, setLanguageFilter] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
   const [downloading, setDownloading] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [flagging, setFlagging] = useState<string | null>(null);
+  const [showFlagDropdown, setShowFlagDropdown] = useState<string | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
 
   const { isAdmin } = getUserInfo();
 
@@ -348,6 +353,70 @@ function AdminPanel() {
     }
   };
 
+  const handleDeleteTranscription = async (transcriptionId: string) => {
+    const confirmed = window.confirm(
+      'Are you sure you want to delete this transcription?\n\n' +
+      'This action cannot be undone. The following will be permanently deleted:\n' +
+      '• Transcription data from database\n' +
+      '• Audio file from S3 storage\n\n' +
+      'This action is irreversible.'
+    );
+    
+    if (!confirmed) {
+      return;
+    }
+
+    setDeleting(transcriptionId);
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.delete(
+        `${API_BASE_URL}/api/transcriptions/${transcriptionId}`,
+        config
+      );
+
+      if (response.data.success) {
+        setMessage({ type: 'success', text: 'Transcription deleted successfully' });
+        loadData(); // Reload data
+      } else {
+        setMessage({ type: 'error', text: response.data.error || 'Failed to delete transcription' });
+      }
+    } catch (error: any) {
+      console.error('❌ Error deleting transcription:', error);
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to delete transcription' });
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const handleFlagTranscription = async (transcriptionId: string, currentFlagged: boolean, reason?: string) => {
+    setFlagging(transcriptionId);
+    setShowFlagDropdown(null);
+    try {
+      const config = getAxiosConfig();
+      const newFlaggedState = !currentFlagged;
+      
+      const response = await axios.post(
+        `${API_BASE_URL}/api/transcriptions/${transcriptionId}/flag`,
+        { 
+          is_flagged: newFlaggedState,
+          flag_reason: newFlaggedState ? reason : null
+        },
+        config
+      );
+
+      if (response.data.success) {
+        loadData(); // Reload data
+      } else {
+        setMessage({ type: 'error', text: response.data.error || 'Failed to flag transcription' });
+      }
+    } catch (error: any) {
+      console.error('Error flagging transcription:', error);
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to flag transcription' });
+    } finally {
+      setFlagging(null);
+    }
+  };
+
   const getUserName = (userId: string | undefined) => {
     if (!userId) return 'Unassigned';
     const user = users.find(u => u._id === userId);
@@ -366,7 +435,8 @@ function AdminPanel() {
       getUserName(t.assigned_user_id).toLowerCase().includes(searchLower) ||
       (t.status && t.status.toLowerCase().includes(searchLower)) ||
       (searchLower === 'done' && t.status === 'done') ||
-      (searchLower === 'pending' && t.status === 'pending')
+      (searchLower === 'pending' && t.status === 'pending') ||
+      (searchLower === 'flagged' && t.status === 'flagged')
     );
 
     // Language filter
@@ -717,10 +787,12 @@ function AdminPanel() {
                             className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                               transcription.status === 'done'
                                 ? 'bg-green-100 text-green-800'
+                                : transcription.status === 'flagged'
+                                ? 'bg-red-100 text-red-800'
                                 : 'bg-yellow-100 text-yellow-800'
                             }`}
                           >
-                            {transcription.status === 'done' ? 'Done' : 'Pending'}
+                            {transcription.status === 'done' ? 'Done' : transcription.status === 'flagged' ? 'Flagged' : 'Pending'}
                           </span>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
@@ -781,6 +853,54 @@ function AdminPanel() {
                                 )}
                               </button>
                             )}
+                            
+                            <div className="relative">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (transcription.is_flagged) {
+                                    handleFlagTranscription(transcription._id, true);
+                                  } else {
+                                    if (showFlagDropdown === transcription._id) {
+                                      setShowFlagDropdown(null);
+                                    } else {
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      setDropdownPosition({
+                                        top: rect.bottom + 5,
+                                        right: window.innerWidth - rect.right
+                                      });
+                                      setShowFlagDropdown(transcription._id);
+                                    }
+                                  }
+                                }}
+                                disabled={flagging === transcription._id}
+                                className={`p-1 rounded-lg transition-colors flex items-center justify-center ${
+                                  transcription.is_flagged
+                                    ? 'text-red-600 hover:text-red-800 hover:bg-red-50'
+                                    : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                                }`}
+                                title={transcription.is_flagged ? "Unflag transcription" : "Flag transcription"}
+                              >
+                                {flagging === transcription._id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Flag className={`h-4 w-4 ${transcription.is_flagged ? 'fill-current' : ''}`} />
+                                )}
+                              </button>
+                            </div>
+
+                            <button
+                              onClick={() => handleDeleteTranscription(transcription._id)}
+                              disabled={deleting === transcription._id}
+                              className="text-red-600 hover:text-red-800 disabled:opacity-50 p-1"
+                              title="Delete transcription"
+                            >
+                              {deleting === transcription._id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -852,6 +972,42 @@ function AdminPanel() {
           )}
         </div>
       </div>
+
+      {/* Fixed Flag Dropdown */}
+      {showFlagDropdown && dropdownPosition && (
+        <>
+          <div className="fixed inset-0 z-[100]" onClick={() => setShowFlagDropdown(null)}></div>
+          <div
+            className="fixed w-64 bg-white rounded-lg shadow-xl border border-gray-200 z-[101] overflow-hidden"
+            style={{
+              top: dropdownPosition.top,
+              right: dropdownPosition.right,
+            }}
+          >
+            <div className="p-2 border-b border-gray-100 bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              Select Reason
+            </div>
+            <div className="py-1">
+              {[
+                "Transcribed Word not seperated",
+                "Transcribed words repeated",
+                "Missing transcribed words"
+              ].map((reason) => (
+                <button
+                  key={reason}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleFlagTranscription(showFlagDropdown, false, reason);
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 hover:text-gray-900"
+                >
+                  {reason}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
