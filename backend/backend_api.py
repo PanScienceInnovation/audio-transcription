@@ -1159,6 +1159,66 @@ def flag_transcription(transcription_id):
         }), 500
 
 
+@app.route('/api/admin/transcriptions/<transcription_id>/status', methods=['PUT'])
+def update_transcription_status(transcription_id):
+    """
+    Update transcription status (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    JSON Body:
+        - status: String ('done', 'pending', or 'flagged')
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        data = request.get_json()
+        if not data or 'status' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'status is required'
+            }), 400
+        
+        status = data.get('status')
+        if status not in ['done', 'pending', 'flagged']:
+            return jsonify({
+                'success': False,
+                'error': 'status must be one of: done, pending, flagged'
+            }), 400
+        
+        result = storage_manager.update_transcription_status(transcription_id, status)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'message': result.get('message', 'Transcription status updated'),
+                'document_id': result.get('document_id'),
+                'status': result.get('status')
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to update status')
+            }), 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error updating transcription status: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/transcriptions/<transcription_id>/assign', methods=['POST'])
 def assign_transcription(transcription_id):
     """
@@ -1650,6 +1710,7 @@ if __name__ == '__main__':
     print("   DELETE /api/transcriptions/<id>       - Delete transcription by ID (admin only)")
     print("   POST /api/admin/transcriptions/<id>/assign - Assign transcription to user (admin)")
     print("   POST /api/admin/transcriptions/<id>/unassign - Unassign transcription (admin)")
+    print("   PUT  /api/admin/transcriptions/<id>/status - Update transcription status (admin)")
     print("   GET  /api/admin/users                - List all users (admin)")
     print("="*100 + "\n")
     

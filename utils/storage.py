@@ -572,7 +572,75 @@ class StorageManager:
                 'success': False,
                 'error': f"Error flagging transcription: {str(e)}"
             }
-
+    
+    def update_transcription_status(self, document_id: str, status: str) -> Dict[str, Any]:
+        """
+        Update transcription status (admin only operation).
+        
+        Args:
+            document_id: MongoDB document ID
+            status: Status to set ('done', 'pending', or 'flagged')
+            
+        Returns:
+            Dictionary with update result
+        """
+        try:
+            if not self.collection:
+                return {
+                    'success': False,
+                    'error': 'MongoDB not initialized'
+                }
+            
+            if status not in ['done', 'pending', 'flagged']:
+                return {
+                    'success': False,
+                    'error': f'Invalid status: {status}. Must be one of: done, pending, flagged'
+                }
+            
+            from bson import ObjectId
+            from bson.errors import InvalidId
+            
+            # Validate and convert ObjectId
+            try:
+                obj_id = ObjectId(document_id)
+            except (InvalidId, ValueError) as e:
+                return {
+                    'success': False,
+                    'error': f'Invalid transcription ID format: {str(e)}'
+                }
+            
+            # Update the manual_status field (admin override)
+            update_result = self.collection.update_one(
+                {'_id': obj_id},
+                {
+                    '$set': {
+                        'manual_status': status,
+                        'updated_at': datetime.now(timezone.utc)
+                    }
+                }
+            )
+            
+            if update_result.matched_count == 0:
+                return {
+                    'success': False,
+                    'error': 'Transcription not found'
+                }
+            
+            print(f"✅ Updated transcription status to '{status}': {document_id}")
+            
+            return {
+                'success': True,
+                'document_id': document_id,
+                'status': status,
+                'message': f"Transcription status updated to '{status}'"
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Error updating transcription status: {str(e)}"
+            }
+    
     def list_transcriptions(self, limit: int = 100, skip: int = 0, user_id: Optional[str] = None, is_admin: bool = False) -> Dict[str, Any]:
         """
         List transcriptions from MongoDB.
@@ -643,27 +711,44 @@ class StorageManager:
                 metadata = transcription_data.get('metadata', {})
                 
                 # Priority order for filename:
-                # 1. audio_path from metadata.audio_path or transcription_data.audio_path
-                # 2. S3 key (contains timestamped filename like "audio/20250120_123456_audio.mp3")
-                # 3. metadata.filename (fallback)
+                # 1. metadata.filename (the actual filename - highest priority, preserves user's filename)
+                # 2. audio_path from metadata.audio_path or transcription_data.audio_path
+                # 3. S3 key (contains timestamped filename - strip timestamp prefix if needed)
                 display_filename = ''
                 
-                # Check audio_path in both locations
-                audio_path = transcription_data.get('audio_path') or metadata.get('audio_path', '')
-                
-                if audio_path:
-                    # Extract filename from audio_path (handle paths like "/api/audio/5143282_audio.mp3" or "5143282_audio.mp3")
-                    if '/' in audio_path:
-                        display_filename = audio_path.split('/')[-1]
-                    else:
-                        display_filename = audio_path
-                elif s3_metadata.get('key'):
-                    # Use S3 key which contains timestamped filename (e.g., "audio/20250120_123456_audio.mp3")
-                    s3_key = s3_metadata.get('key', '')
-                    display_filename = s3_key.split('/')[-1] if '/' in s3_key else s3_key
+                # First priority: Use metadata.filename if it exists (this is the user's actual filename)
+                if metadata.get('filename'):
+                    display_filename = metadata.get('filename')
                 else:
-                    # Fallback to metadata filename
-                    display_filename = metadata.get('filename', '')
+                    # Second priority: Check audio_path in both locations
+                    audio_path = transcription_data.get('audio_path') or metadata.get('audio_path', '')
+                    
+                    if audio_path:
+                        # Extract filename from audio_path (handle paths like "/api/audio/5143282_audio.mp3" or "5143282_audio.mp3")
+                        if '/' in audio_path:
+                            display_filename = audio_path.split('/')[-1]
+                        else:
+                            display_filename = audio_path
+                    elif s3_metadata.get('key'):
+                        # Last resort: Use S3 key which contains timestamped filename (e.g., "audio/20250120_123456_audio.mp3")
+                        # Try to extract original filename by removing timestamp prefix
+                        s3_key = s3_metadata.get('key', '')
+                        s3_filename = s3_key.split('/')[-1] if '/' in s3_key else s3_key
+                        
+                        # Try to remove timestamp prefix (format: YYYYMMDD_HHMMSS_filename)
+                        # Pattern: digits_underscore_digits_underscore_rest
+                        import re
+                        # Match pattern like "20251123_135107_test2_audio.mp3" and extract "test2_audio.mp3"
+                        match = re.match(r'^\d{8}_\d{6}_(.+)$', s3_filename)
+                        if match:
+                            # Extract the original filename after timestamp
+                            display_filename = match.group(1)
+                        else:
+                            # If pattern doesn't match, use the S3 filename as-is
+                            display_filename = s3_filename
+                    else:
+                        # Final fallback: empty string
+                        display_filename = ''
                 
                 # Calculate edited words count (for words type transcriptions)
                 edited_words_count = 0
@@ -672,14 +757,20 @@ class StorageManager:
                     edited_words_count = sum(1 for word in words if word.get('is_edited', False))
                 
                 # Determine status:
-                # - "flagged" if is_flagged is True (highest priority)
-                # - "done" only if file is assigned AND the assigned user has saved changes (user_id matches assigned_user_id)
-                # - "pending" if not assigned, or assigned but assigned user hasn't saved changes yet
+                # Priority order:
+                # 1. manual_status (if set by admin - highest priority)
+                # 2. "flagged" if is_flagged is True
+                # 3. "done" only if file is assigned AND the assigned user has saved changes (user_id matches assigned_user_id)
+                # 4. "pending" if not assigned, or assigned but assigned user hasn't saved changes yet
                 is_flagged = doc.get('is_flagged', False)
                 assigned_user_id = doc.get('assigned_user_id')
                 user_id = doc.get('user_id')
+                manual_status = doc.get('manual_status')  # Admin-set status override
                 
-                if is_flagged:
+                # Use manual_status if set by admin (highest priority)
+                if manual_status and manual_status in ['done', 'pending', 'flagged']:
+                    status = manual_status
+                elif is_flagged:
                     status = 'flagged'
                 # Status is "done" only if assigned AND the user_id matches assigned_user_id (meaning assigned user saved)
                 elif assigned_user_id and user_id and str(assigned_user_id) == str(user_id):

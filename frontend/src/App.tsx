@@ -151,6 +151,7 @@ function App() {
   const [flagging, setFlagging] = useState<string | null>(null);
   const [showFlagDropdown, setShowFlagDropdown] = useState<string | null>(null);
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
+  const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -347,6 +348,8 @@ function App() {
 
             if (transcriptionData.transcription_type === 'words' && transcriptionData.words) {
               // Convert saved transcription to App's TranscriptionData format
+              // Use filename from transcription summary (which is the source of truth) or from metadata
+              const filenameToUse = transcription.filename || transcriptionData.metadata?.filename || 'Loaded Transcription';
               const loadedData: TranscriptionData = {
                 words: transcriptionData.words,
                 language: transcriptionData.language,
@@ -354,7 +357,7 @@ function App() {
                 audio_duration: transcriptionData.audio_duration,
                 total_words: transcriptionData.total_words || transcriptionData.words.length,
                 metadata: {
-                  filename: transcriptionData.metadata?.filename || 'Loaded Transcription',
+                  filename: filenameToUse,
                   audio_path: '', // Will be set from S3
                 },
               };
@@ -455,6 +458,30 @@ function App() {
       alert(`Error: ${error.response?.data?.error || error.message}`);
     } finally {
       setFlagging(null);
+    }
+  };
+
+  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged') => {
+    setUpdatingStatus(transcriptionId);
+    try {
+      const config = getAxiosConfig();
+      
+      const response = await axios.put(
+        `${API_BASE_URL}/api/admin/transcriptions/${transcriptionId}/status`,
+        { status: newStatus },
+        config
+      );
+
+      if (response.data.success) {
+        fetchSavedTranscriptions(); // Reload data
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error updating status:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setUpdatingStatus(null);
     }
   };
 
@@ -785,10 +812,39 @@ function App() {
     try {
       // Extract audio filename from audio_path
       const audioPath = transcriptionData.metadata?.audio_path || transcriptionData.audio_path || '';
-      const audioFilename = audioPath.split('/').pop() || '';
+      let audioFilename = audioPath.split('/').pop() || '';
       
-      // Use renamed filename if available, otherwise use original
-      const finalFilename = transcriptionData.metadata?.filename || audioFilename;
+      // Strip timestamp prefix from audioFilename if it exists (format: YYYYMMDD_HHMMSS_filename)
+      // This ensures we use the original filename, not the timestamped one
+      if (audioFilename) {
+        const timestampPattern = /^\d{8}_\d{6}_(.+)$/;
+        const match = audioFilename.match(timestampPattern);
+        if (match) {
+          audioFilename = match[1]; // Extract original filename after timestamp
+        }
+      }
+      
+      // Preserve the existing filename from metadata - never recalculate it when updating
+      // Only use audioFilename as fallback for new transcriptions
+      let finalFilename = transcriptionData.metadata?.filename;
+      
+      // If no filename in metadata and we're creating a new transcription, use audioFilename
+      if (!finalFilename && !currentTranscriptionId) {
+        finalFilename = audioFilename || 'Untitled';
+      }
+      
+      // If still no filename, preserve it from the saved transcription if available
+      if (!finalFilename && currentTranscriptionId) {
+        const savedTranscription = allSavedTranscriptions.find(t => t._id === currentTranscriptionId);
+        if (savedTranscription?.filename) {
+          finalFilename = savedTranscription.filename;
+        }
+      }
+      
+      // Final fallback
+      if (!finalFilename) {
+        finalFilename = audioFilename || 'Untitled';
+      }
 
       // Prepare transcription data
       const transcriptionDataToSave = {
@@ -931,8 +987,14 @@ function App() {
       const audioPath = transcriptionData.metadata?.audio_path || transcriptionData.audio_path || '';
       const audioFilename = audioPath.split('/').pop() || '';
       
-      // Use renamed filename if available, otherwise use original
-      const finalFilename = transcriptionData.metadata?.filename || audioFilename;
+      // Preserve the existing filename from metadata - never recalculate it
+      // Only use audioFilename as fallback for new transcriptions
+      let finalFilename = transcriptionData.metadata?.filename;
+      
+      // If no filename in metadata, use audioFilename or fallback
+      if (!finalFilename) {
+        finalFilename = audioFilename || 'Untitled';
+      }
 
       // Prepare transcription data
       const transcriptionDataToSave = {
@@ -1325,17 +1387,39 @@ function App() {
                       </div>
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
-                                <span
-                                  className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                    transcription.status === 'done'
-                                      ? 'bg-green-100 text-green-800'
-                                      : transcription.status === 'flagged'
-                                      ? 'bg-red-100 text-red-800'
-                                      : 'bg-yellow-100 text-yellow-800'
-                                  }`}
-                                >
-                                  {transcription.status === 'done' ? 'Done' : transcription.status === 'flagged' ? 'Flagged' : 'Pending'}
-                                </span>
+                                {getUserInfo().isAdmin ? (
+                                  <select
+                                    value={transcription.status || 'pending'}
+                                    onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged')}
+                                    disabled={updatingStatus === transcription._id}
+                                    className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
+                                      transcription.status === 'done'
+                                        ? 'bg-green-100 text-green-800'
+                                        : transcription.status === 'flagged'
+                                        ? 'bg-red-100 text-red-800'
+                                        : 'bg-yellow-100 text-yellow-800'
+                                    } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                  >
+                                    <option value="pending">Pending</option>
+                                    <option value="done">Done</option>
+                                    <option value="flagged">Flagged</option>
+                                  </select>
+                                ) : (
+                                  <span
+                                    className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                      transcription.status === 'done'
+                                        ? 'bg-green-100 text-green-800'
+                                        : transcription.status === 'flagged'
+                                        ? 'bg-red-100 text-red-800'
+                                        : 'bg-yellow-100 text-yellow-800'
+                                    }`}
+                                  >
+                                    {transcription.status === 'done' ? 'Done' : transcription.status === 'flagged' ? 'Flagged' : 'Pending'}
+                                  </span>
+                                )}
+                                {updatingStatus === transcription._id && (
+                                  <Loader2 className="inline-block h-3 w-3 ml-2 animate-spin text-gray-500" />
+                                )}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                                 {new Date(transcription.created_at).toLocaleDateString()}
