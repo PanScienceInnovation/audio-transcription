@@ -1648,6 +1648,11 @@ function App() {
                   )}
                   <button
                     onClick={() => {
+                      // If edit modal is open, close it first
+                      if (editingIndex !== null) {
+                        cancelEdit();
+                      }
+                      // Proceed with navigation
                       if (hasChanges) {
                         const confirmReset = window.confirm('Discard changes and go back?');
                         if (!confirmReset) return;
@@ -1859,7 +1864,10 @@ function App() {
                   <div key={index} className="relative group">
                     {editingIndex === index ? (
                       // Edit Mode
-                      <div className="inline-block p-2 m-1 border-2 border-blue-500 rounded bg-blue-50">
+                      <div 
+                        className="inline-block p-2 m-1 border-2 border-blue-500 rounded bg-blue-50"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <div className="space-y-2">
                           <label className="text-xs text-gray-600">Word</label>
                           <textarea
@@ -1886,13 +1894,19 @@ function App() {
                           />
                           <div className="flex gap-1">
                             <button
-                              onClick={saveEdit}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                saveEdit();
+                              }}
                               className="flex-1 bg-green-600 text-white p-1 rounded text-xs hover:bg-green-700"
                             >
                               <Check className="h-3 w-3 mx-auto" />
                             </button>
                             <button
-                              onClick={cancelEdit}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                cancelEdit();
+                              }}
                               className="flex-1 bg-red-600 text-white p-1 rounded text-xs hover:bg-red-700"
                             >
                               <X className="h-3 w-3 mx-auto" />
