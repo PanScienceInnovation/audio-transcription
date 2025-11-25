@@ -53,6 +53,7 @@ interface Transcription {
   total_words?: number;
   transcription_type?: 'words' | 'phrases';
   is_flagged?: boolean;
+  audio_duration?: number;
 }
 
 function AdminPanel() {
@@ -423,6 +424,26 @@ function AdminPanel() {
     return user ? user.name || user.username : userId;
   };
 
+  // Helper function to format duration in hours, minutes, and seconds
+  const formatDuration = (seconds: number): string => {
+    if (!seconds || seconds === 0) return '0 hours';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    
+    const parts: string[] = [];
+    if (hours > 0) parts.push(`${hours} hour${hours !== 1 ? 's' : ''}`);
+    if (minutes > 0) parts.push(`${minutes} minute${minutes !== 1 ? 's' : ''}`);
+    if (secs > 0 && hours === 0) parts.push(`${secs} second${secs !== 1 ? 's' : ''}`);
+    
+    return parts.length > 0 ? parts.join(', ') : '0 hours';
+  };
+
+  // Calculate total duration of files with status "done"
+  const totalDoneDuration = transcriptions
+    .filter(t => t.status === 'done' && t.audio_duration)
+    .reduce((sum, t) => sum + (t.audio_duration || 0), 0);
+
   // Get unique languages for filter dropdown
   const uniqueLanguages = Array.from(new Set(transcriptions.map(t => t.language).filter(Boolean))).sort();
 
@@ -568,6 +589,15 @@ function AdminPanel() {
               </button>
             </div>
           )}
+
+          {/* Total Duration Stats */}
+          <div className="mb-6 ml-4 bg-transparent border-none">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-medium text-blue-900 mb-1">Total Duration of Done Files: {formatDuration(totalDoneDuration)}</h3>
+              </div>
+            </div>
+          </div>
 
           <div className="mb-6 space-y-4">
             {/* Search and Filter Controls */}
