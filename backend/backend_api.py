@@ -1525,6 +1525,91 @@ def delete_transcription_by_id(transcription_id):
         }), 500
 
 
+@app.route('/api/admin/transcriptions/bulk-delete', methods=['POST'])
+def bulk_delete_transcriptions():
+    """
+    Bulk delete transcriptions from MongoDB (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    Body:
+        - transcription_ids: List of transcription IDs to delete
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        data = request.get_json()
+        if not data or 'transcription_ids' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'transcription_ids array is required'
+            }), 400
+        
+        transcription_ids = data.get('transcription_ids', [])
+        if not isinstance(transcription_ids, list) or len(transcription_ids) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'transcription_ids must be a non-empty array'
+            }), 400
+        
+        # Delete each transcription
+        results = {
+            'successful': [],
+            'failed': []
+        }
+        
+        for transcription_id in transcription_ids:
+            try:
+                result = storage_manager.delete_transcription(transcription_id)
+                if result['success']:
+                    results['successful'].append({
+                        'id': transcription_id,
+                        'message': result.get('message', 'Deleted successfully')
+                    })
+                else:
+                    results['failed'].append({
+                        'id': transcription_id,
+                        'error': result.get('error', 'Failed to delete')
+                    })
+            except Exception as e:
+                results['failed'].append({
+                    'id': transcription_id,
+                    'error': str(e)
+                })
+        
+        total_requested = len(transcription_ids)
+        total_successful = len(results['successful'])
+        total_failed = len(results['failed'])
+        
+        return jsonify({
+            'success': True,
+            'message': f'Bulk delete completed: {total_successful} successful, {total_failed} failed',
+            'results': results,
+            'summary': {
+                'total_requested': total_requested,
+                'total_successful': total_successful,
+                'total_failed': total_failed
+            }
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error in bulk delete: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/transcriptions/statistics', methods=['GET'])
 def get_transcription_statistics():
     """
@@ -1883,6 +1968,7 @@ if __name__ == '__main__':
     print("   DELETE /api/transcriptions/<id>/version-history - Clear version history (access controlled)")
     print("   POST /api/transcriptions/<id>/flag    - Flag/unflag transcription")
     print("   DELETE /api/transcriptions/<id>       - Delete transcription by ID (admin only)")
+    print("   POST /api/admin/transcriptions/bulk-delete - Bulk delete transcriptions (admin)")
     print("   POST /api/admin/transcriptions/<id>/assign - Assign transcription to user (admin)")
     print("   POST /api/admin/transcriptions/<id>/unassign - Unassign transcription (admin)")
     print("   PUT  /api/admin/transcriptions/<id>/status - Update transcription status (admin)")

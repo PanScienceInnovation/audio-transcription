@@ -80,6 +80,7 @@ function AdminPanel() {
   const [flaggedFilter, setFlaggedFilter] = useState<string>('');
   const [downloading, setDownloading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [flagging, setFlagging] = useState<string | null>(null);
   const [showFlagDropdown, setShowFlagDropdown] = useState<string | null>(null);
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
@@ -421,6 +422,51 @@ function AdminPanel() {
       setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to delete transcription' });
     } finally {
       setDeleting(null);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedTranscriptions.size === 0) {
+      setMessage({ type: 'error', text: 'Please select at least one transcription to delete' });
+      return;
+    }
+
+    const selectedIds = Array.from(selectedTranscriptions);
+    const confirmed = window.confirm(
+      `Are you sure you want to delete ${selectedIds.length} transcription(s)?\n\n` +
+      'This action cannot be undone. The following will be permanently deleted:\n' +
+      '• Transcription data from database\n' +
+      '• Audio files from S3 storage\n\n' +
+      'This action is irreversible.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setBulkDeleting(true);
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.post(
+        `${API_BASE_URL}/api/admin/transcriptions/bulk-delete`,
+        { transcription_ids: selectedIds },
+        config
+      );
+
+      if (response.data.success) {
+        const summary = response.data.summary;
+        const message = `Bulk delete completed: ${summary.total_successful} successful, ${summary.total_failed} failed`;
+        setMessage({ type: 'success', text: message });
+        setSelectedTranscriptions(new Set()); // Clear selection
+        loadData(); // Reload data
+      } else {
+        setMessage({ type: 'error', text: response.data.error || 'Failed to delete transcriptions' });
+      }
+    } catch (error: any) {
+      console.error('❌ Error in bulk delete:', error);
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to delete transcriptions' });
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -810,7 +856,7 @@ function AdminPanel() {
                   <select
                     value={bulkAssignUserId}
                     onChange={(e) => setBulkAssignUserId(e.target.value)}
-                    disabled={bulkAssigning}
+                    disabled={bulkAssigning || bulkDeleting}
                     className="text-sm border border-gray-300 rounded px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
                   >
                     <option value="">Select user to assign...</option>
@@ -822,7 +868,7 @@ function AdminPanel() {
                   </select>
                   <button
                     onClick={handleBulkAssign}
-                    disabled={!bulkAssignUserId || bulkAssigning}
+                    disabled={!bulkAssignUserId || bulkAssigning || bulkDeleting}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {bulkAssigning ? (
@@ -839,7 +885,7 @@ function AdminPanel() {
                   </button>
                   <button
                     onClick={handleBulkUnassign}
-                    disabled={bulkAssigning}
+                    disabled={bulkAssigning || bulkDeleting}
                     className="flex items-center gap-2 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {bulkAssigning ? (
@@ -851,6 +897,23 @@ function AdminPanel() {
                       <>
                         <UserX className="h-4 w-4" />
                         Unassign Selected
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={handleBulkDelete}
+                    disabled={bulkDeleting || bulkAssigning}
+                    className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {bulkDeleting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="h-4 w-4" />
+                        Delete Selected
                       </>
                     )}
                   </button>
