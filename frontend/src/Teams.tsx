@@ -92,7 +92,7 @@ function Teams() {
       }
 
       // Load transcriptions
-      const transcriptionsResponse = await axios.get(`${API_BASE_URL}/api/transcriptions?limit=1000`, config);
+      const transcriptionsResponse = await axios.get(`${API_BASE_URL}/api/transcriptions?limit=50`, config);
       if (transcriptionsResponse.data.success) {
         setTranscriptions(transcriptionsResponse.data.data.transcriptions);
       }

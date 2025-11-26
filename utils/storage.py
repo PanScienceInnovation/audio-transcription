@@ -2,6 +2,7 @@
 Storage utilities for S3 and MongoDB operations.
 """
 import os
+import time
 import boto3
 from pymongo import MongoClient
 from datetime import datetime, timezone
@@ -64,8 +65,10 @@ class StorageManager:
             try:
                 self.collection.create_index('created_at')
                 self.collection.create_index('user_id')
+                self.collection.create_index('assigned_user_id')  # Index for filtering by assigned user
                 self.collection.create_index([('user_id', 1), ('created_at', -1)])  # Compound index
-                print(f"✅ Created indexes on 'created_at' and 'user_id' fields")
+                self.collection.create_index([('assigned_user_id', 1), ('created_at', -1)])  # Compound index for assigned user queries
+                print(f"✅ Created indexes on 'created_at', 'user_id', and 'assigned_user_id' fields")
             except Exception as e:
                 # Index might already exist, which is fine
                 pass
@@ -641,9 +644,13 @@ class StorageManager:
                 'error': f"Error updating transcription status: {str(e)}"
             }
     
-    def list_transcriptions(self, limit: int = 100, skip: int = 0, user_id: Optional[str] = None, is_admin: bool = False) -> Dict[str, Any]:
+    def list_transcriptions(self, limit: int = 100, skip: int = 0, user_id: Optional[str] = None, is_admin: bool = False,
+                           search: Optional[str] = None, language: Optional[str] = None, 
+                           date: Optional[str] = None, status: Optional[str] = None,
+                           assigned_user: Optional[str] = None, flagged: Optional[str] = None,
+                           transcription_type: Optional[str] = None) -> Dict[str, Any]:
         """
-        List transcriptions from MongoDB.
+        List transcriptions from MongoDB with filtering and pagination.
         Regular users can only see transcriptions assigned to them.
         Admins can see all transcriptions.
         
@@ -652,6 +659,13 @@ class StorageManager:
             skip: Number of documents to skip
             user_id: User ID to filter transcriptions (if not admin)
             is_admin: Whether the user is an admin (admins see all transcriptions)
+            search: Search term for filename (case-insensitive partial match)
+            language: Filter by language (exact match)
+            date: Filter by date (YYYY-MM-DD format, matches created_at date)
+            status: Filter by status ('done', 'pending', 'flagged')
+            assigned_user: Filter by assigned user ID (or 'unassigned' for None)
+            flagged: Filter by flagged status ('flagged' or 'not-flagged')
+            transcription_type: Filter by transcription type ('words' or 'phrases')
             
         Returns:
             Dictionary with list of transcriptions and metadata
@@ -663,7 +677,7 @@ class StorageManager:
                     'error': 'MongoDB not initialized'
                 }
             
-            # Build query filter
+            # Build base query filter
             # Admins see all transcriptions, regular users only see assigned ones
             if is_admin:
                 query_filter = {}
@@ -688,13 +702,126 @@ class StorageManager:
                     }
                     print("⚠️  No user_id provided for non-admin user, showing unassigned only")
             
-            # Get total count
-            total_count = self.collection.count_documents(query_filter)
-            print(f"📊 Query filter: {query_filter}, Total count: {total_count}")
+            # Apply additional filters
+            additional_filters = []
+            
+            # Language filter
+            if language:
+                additional_filters.append({'transcription_data.language': language})
+            
+            # Date filter (match created_at date)
+            if date:
+                try:
+                    from datetime import datetime, timezone
+                    # Parse date string (YYYY-MM-DD)
+                    date_obj = datetime.strptime(date, '%Y-%m-%d')
+                    # Create date range for the entire day
+                    start_of_day = datetime.combine(date_obj.date(), datetime.min.time()).replace(tzinfo=timezone.utc)
+                    end_of_day = datetime.combine(date_obj.date(), datetime.max.time()).replace(tzinfo=timezone.utc)
+                    additional_filters.append({
+                        'created_at': {
+                            '$gte': start_of_day,
+                            '$lte': end_of_day
+                        }
+                    })
+                except ValueError:
+                    print(f"⚠️  Invalid date format: {date}, ignoring date filter")
+            
+            # Status filter (needs to be applied after document processing, but we can pre-filter some cases)
+            # Note: Status is computed from multiple fields, so we'll filter after processing
+            # But we can filter by manual_status if it exists
+            if status:
+                # If status is 'flagged', we can filter by is_flagged
+                if status == 'flagged':
+                    additional_filters.append({'is_flagged': True})
+                elif status == 'done':
+                    # For 'done', we need both assigned_user_id and user_id to match
+                    # This is complex, so we'll filter after processing
+                    pass
+                elif status == 'pending':
+                    # For 'pending', we can filter out flagged ones
+                    additional_filters.append({'$or': [
+                        {'is_flagged': False},
+                        {'is_flagged': {'$exists': False}}
+                    ]})
+            
+            # Assigned user filter
+            if assigned_user:
+                if assigned_user == 'unassigned':
+                    additional_filters.append({
+                        '$or': [
+                            {'assigned_user_id': None},
+                            {'assigned_user_id': {'$exists': False}}
+                        ]
+                    })
+                else:
+                    additional_filters.append({'assigned_user_id': str(assigned_user)})
+            
+            # Flagged filter
+            if flagged == 'flagged':
+                additional_filters.append({'is_flagged': True})
+            elif flagged == 'not-flagged':
+                additional_filters.append({
+                    '$or': [
+                        {'is_flagged': False},
+                        {'is_flagged': {'$exists': False}}
+                    ]
+                })
+            
+            # Transcription type filter
+            if transcription_type:
+                additional_filters.append({'transcription_data.transcription_type': transcription_type})
+            
+            # Combine all filters
+            if additional_filters:
+                if query_filter:
+                    query_filter = {'$and': [query_filter] + additional_filters}
+                else:
+                    query_filter = {'$and': additional_filters} if len(additional_filters) > 1 else additional_filters[0]
+            
+            # Note: If search or status filters are active, we need to process more documents
+            # to apply these filters correctly, then paginate. For now, we'll fetch a larger batch
+            # when these filters are active, filter in memory, then paginate.
+            # TODO: Optimize by storing computed status and adding text index for filename search
+            needs_post_filtering = bool(search or (status and status in ['done', 'pending']))
+            
+            # Calculate fetch size: if we need post-filtering, fetch more to account for filtering
+            fetch_limit = limit * 10 if needs_post_filtering else limit
+            fetch_skip = skip if not needs_post_filtering else 0  # Start from beginning if post-filtering
             
             # Get documents sorted by created_at descending (newest first)
-            cursor = self.collection.find(query_filter).sort('created_at', -1).skip(skip).limit(limit)
+            # Use projection to exclude large fields we don't need for list view
+            # This significantly reduces data transfer and processing time
+            # Excluding 'words' and 'phrases' arrays which can be very large
+            projection = {
+                '_id': 1,
+                'created_at': 1,
+                'updated_at': 1,
+                'user_id': 1,
+                'assigned_user_id': 1,
+                'is_flagged': 1,
+                'flag_reason': 1,
+                'manual_status': 1,
+                'transcription_data.transcription_type': 1,
+                'transcription_data.language': 1,
+                'transcription_data.total_words': 1,
+                'transcription_data.total_phrases': 1,
+                'transcription_data.audio_duration': 1,
+                'transcription_data.audio_path': 1,
+                'transcription_data.metadata.filename': 1,
+                'transcription_data.metadata.audio_path': 1,
+                'transcription_data.edited_words_count': 1,  # Use stored count if available
+                's3_metadata.url': 1,
+                's3_metadata.key': 1
+            }
             
+            find_start = time.time()
+            cursor = self.collection.find(query_filter, projection).sort('created_at', -1).skip(fetch_skip).limit(fetch_limit)
+            find_time = (time.time() - find_start) * 1000
+            print(f"⏱️  [TIMING] MongoDB find() query took {find_time:.2f}ms (fetch_limit={fetch_limit}, fetch_skip={fetch_skip})")
+            
+            # Process documents
+            process_start = time.time()
             transcriptions = []
             for doc in cursor:
                 # Convert ObjectId to string
@@ -751,10 +878,9 @@ class StorageManager:
                         display_filename = ''
                 
                 # Calculate edited words count (for words type transcriptions)
-                edited_words_count = 0
-                if transcription_data.get('transcription_type') == 'words':
-                    words = transcription_data.get('words', [])
-                    edited_words_count = sum(1 for word in words if word.get('is_edited', False))
+                # Use stored count if available (set when document is saved/updated)
+                # Otherwise default to 0 (words array excluded from projection for performance)
+                edited_words_count = transcription_data.get('edited_words_count', 0)
                 
                 # Determine status:
                 # Priority order:
@@ -764,19 +890,31 @@ class StorageManager:
                 # 4. "pending" if not assigned, or assigned but assigned user hasn't saved changes yet
                 is_flagged = doc.get('is_flagged', False)
                 assigned_user_id = doc.get('assigned_user_id')
-                user_id = doc.get('user_id')
+                doc_user_id = doc.get('user_id')
                 manual_status = doc.get('manual_status')  # Admin-set status override
                 
                 # Use manual_status if set by admin (highest priority)
                 if manual_status and manual_status in ['done', 'pending', 'flagged']:
-                    status = manual_status
+                    computed_status = manual_status
                 elif is_flagged:
-                    status = 'flagged'
+                    computed_status = 'flagged'
                 # Status is "done" only if assigned AND the user_id matches assigned_user_id (meaning assigned user saved)
-                elif assigned_user_id and user_id and str(assigned_user_id) == str(user_id):
-                    status = 'done'  # Assigned and assigned user has saved changes
+                elif assigned_user_id and doc_user_id and str(assigned_user_id) == str(doc_user_id):
+                    computed_status = 'done'  # Assigned and assigned user has saved changes
                 else:
-                    status = 'pending'  # Not assigned, or assigned but assigned user hasn't saved yet
+                    computed_status = 'pending'  # Not assigned, or assigned but assigned user hasn't saved yet
+                
+                # Apply status filter (if specified and doesn't match, skip this document)
+                if status and computed_status != status:
+                    continue
+                
+                # Apply search filter (if specified, check filename, assigned user name would need user lookup)
+                if search:
+                    search_lower = search.lower()
+                    # Check filename
+                    if search_lower not in display_filename.lower():
+                        # Could also check status, but we already filtered by status above
+                        continue
                 
                 summary = {
                     '_id': doc['_id'],
@@ -791,12 +929,33 @@ class StorageManager:
                     'filename': display_filename,
                     'user_id': doc.get('user_id'),  # Creator/saver
                     'assigned_user_id': doc.get('assigned_user_id'),  # Assigned user
-                    'status': status,  # 'done', 'pending', or 'flagged'
+                    'status': computed_status,  # 'done', 'pending', or 'flagged'
                     'is_flagged': is_flagged,
                     'flag_reason': doc.get('flag_reason'),
                     'edited_words_count': edited_words_count  # Number of words edited
                 }
                 transcriptions.append(summary)
+            
+            process_time = (time.time() - process_start) * 1000
+            print(f"⏱️  [TIMING] Document processing took {process_time:.2f}ms (processed {len(transcriptions)} documents before pagination)")
+            
+            # Apply pagination if we did post-filtering
+            if needs_post_filtering:
+                total_count = len(transcriptions)
+                # Apply skip and limit to filtered results
+                transcriptions = transcriptions[skip:skip + limit]
+                print(f"📄 Applied post-filtering pagination: showing {len(transcriptions)} of {total_count} filtered results")
+            else:
+                # Get total count for non-post-filtered queries
+                count_start = time.time()
+                if is_admin and query_filter == {}:
+                    # For admin users querying all documents, use estimated_document_count (much faster, O(1))
+                    total_count = self.collection.estimated_document_count()
+                else:
+                    # For filtered queries, use count_documents (exact count)
+                    total_count = self.collection.count_documents(query_filter)
+                count_time = (time.time() - count_start) * 1000
+                print(f"📊 Total count: {total_count} (count took {count_time:.2f}ms)")
             
             return {
                 'success': True,
@@ -810,6 +969,122 @@ class StorageManager:
             return {
                 'success': False,
                 'error': f"Error listing transcriptions: {str(e)}"
+            }
+    
+    def get_transcription_statistics(self, user_id: Optional[str] = None, is_admin: bool = False, 
+                                     transcription_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get statistics about transcriptions (total, done, pending, flagged counts).
+        Regular users only see statistics for transcriptions assigned to them.
+        Admins see statistics for all transcriptions.
+        
+        Args:
+            user_id: User ID to filter transcriptions (if not admin)
+            is_admin: Whether the user is an admin (admins see all transcriptions)
+            transcription_type: Filter by transcription type ('words' or 'phrases')
+            
+        Returns:
+            Dictionary with statistics
+        """
+        try:
+            if not self.collection:
+                return {
+                    'success': False,
+                    'error': 'MongoDB not initialized'
+                }
+            
+            # Build base query filter (same as list_transcriptions)
+            if is_admin:
+                query_filter = {}
+            else:
+                if user_id:
+                    user_id_str = str(user_id)
+                    query_filter = {'assigned_user_id': user_id_str}
+                else:
+                    query_filter = {
+                        '$or': [
+                            {'assigned_user_id': None},
+                            {'assigned_user_id': {'$exists': False}}
+                        ]
+                    }
+            
+            # Add transcription_type filter if specified
+            if transcription_type:
+                if query_filter:
+                    query_filter = {'$and': [query_filter, {'transcription_data.transcription_type': transcription_type}]}
+                else:
+                    query_filter = {'transcription_data.transcription_type': transcription_type}
+            
+            # Get all matching documents (we need to process them to determine status)
+            # Use projection to exclude large fields, but include audio_duration for duration calculation
+            projection = {
+                '_id': 1,
+                'user_id': 1,
+                'assigned_user_id': 1,
+                'is_flagged': 1,
+                'manual_status': 1,
+                'transcription_data.transcription_type': 1,
+                'transcription_data.audio_duration': 1
+            }
+            
+            cursor = self.collection.find(query_filter, projection)
+            
+            # Initialize counters
+            total_count = 0
+            done_count = 0
+            pending_count = 0
+            flagged_count = 0
+            total_done_duration = 0.0  # Total duration in seconds
+            
+            # Process each document to determine status
+            for doc in cursor:
+                total_count += 1
+                
+                # Get audio duration if available
+                transcription_data = doc.get('transcription_data', {})
+                audio_duration = transcription_data.get('audio_duration', 0) or 0
+                
+                # Determine status (same logic as in list_transcriptions)
+                is_flagged = doc.get('is_flagged', False)
+                assigned_user_id = doc.get('assigned_user_id')
+                doc_user_id = doc.get('user_id')
+                manual_status = doc.get('manual_status')
+                
+                # Use manual_status if set by admin (highest priority)
+                if manual_status and manual_status in ['done', 'pending', 'flagged']:
+                    status = manual_status
+                elif is_flagged:
+                    status = 'flagged'
+                # Status is "done" only if assigned AND the user_id matches assigned_user_id
+                elif assigned_user_id and doc_user_id and str(assigned_user_id) == str(doc_user_id):
+                    status = 'done'
+                else:
+                    status = 'pending'
+                
+                # Count by status and accumulate duration for done files
+                if status == 'done':
+                    done_count += 1
+                    total_done_duration += float(audio_duration)
+                elif status == 'flagged':
+                    flagged_count += 1
+                else:
+                    pending_count += 1
+            
+            return {
+                'success': True,
+                'statistics': {
+                    'total': total_count,
+                    'done': done_count,
+                    'pending': pending_count,
+                    'flagged': flagged_count,
+                    'total_done_duration': total_done_duration
+                }
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Error getting statistics: {str(e)}"
             }
     
     def update_transcription(self, document_id: str, transcription_data: Dict[str, Any], user_id: Optional[str] = None) -> Dict[str, Any]:

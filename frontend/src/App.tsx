@@ -136,6 +136,7 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(20); // 20 items per page for table
   const [totalItems, setTotalItems] = useState(0);
+  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0 }); // Statistics from backend
   const [isAddingWord, setIsAddingWord] = useState(false);
   const [newWordValues, setNewWordValues] = useState<{ start: string; end: string; word: string }>({
     start: '',
@@ -194,10 +195,15 @@ function App() {
   // Fetch languages on mount
   useEffect(() => {
     fetchLanguages();
+  }, []);
+
+  // Fetch saved transcriptions when filters, page, or filename changes
+  useEffect(() => {
     if (!filename) {
       fetchSavedTranscriptions();
     }
-  }, [currentPage, filename]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, filename, searchTerm, statusFilter, languageFilter, dateFilter]);
 
   // Load transcription when filename is in URL
   useEffect(() => {
@@ -217,18 +223,39 @@ function App() {
     setLoadingSaved(true);
     try {
       const config = getAxiosConfig();
-      // Fetch all transcriptions first to filter and get total count
+      
+      // Load statistics (overall counts for words type, not filtered)
+      const statsParams = new URLSearchParams();
+      statsParams.append('transcription_type', 'words');
+      const statsResponse = await axios.get(
+        `${API_BASE_URL}/api/transcriptions/statistics?${statsParams.toString()}`,
+        config
+      );
+      if (statsResponse.data.success) {
+        setStatistics(statsResponse.data.data);
+      }
+      
+      // Build query parameters for transcriptions
+      const params = new URLSearchParams();
+      params.append('limit', itemsPerPage.toString());
+      params.append('skip', ((currentPage - 1) * itemsPerPage).toString());
+      params.append('transcription_type', 'words'); // Only fetch words type
+      
+      if (searchTerm) params.append('search', searchTerm);
+      if (languageFilter) params.append('language', languageFilter);
+      if (dateFilter) params.append('date', dateFilter);
+      if (statusFilter) params.append('status', statusFilter);
+
+      // Fetch transcriptions with pagination and filters
       const response = await axios.get(
-        `${API_BASE_URL}/api/transcriptions?limit=1000&skip=0`,
+        `${API_BASE_URL}/api/transcriptions?${params.toString()}`,
         config
       );
       if (response.data.success) {
-        const allTranscriptions = response.data.data.transcriptions || [];
-        // Filter only 'words' type transcriptions
-        const wordsTranscriptions = allTranscriptions.filter(
-          (t: SavedTranscriptionSummary) => t.transcription_type === 'words'
-        );
-        setAllSavedTranscriptions(wordsTranscriptions);
+        const transcriptions = response.data.data.transcriptions || [];
+        setAllSavedTranscriptions(transcriptions);
+        // Store total count for pagination
+        setTotalItems(response.data.data.total || 0);
       }
     } catch (error: any) {
       console.error('Error fetching saved transcriptions:', error);
@@ -242,42 +269,12 @@ function App() {
     }
   };
 
-  // Filter and sort transcriptions
+  // Sort transcriptions (filtering and pagination are done on backend)
   useEffect(() => {
-    let filtered = [...allSavedTranscriptions];
-
-    // Apply search filter
-    if (searchTerm) {
-      const searchLower = searchTerm.toLowerCase();
-      filtered = filtered.filter(t => 
-        t.filename?.toLowerCase().includes(searchLower) ||
-        (t.status && t.status.toLowerCase().includes(searchLower))
-      );
-    }
-
-    // Apply status filter
-    if (statusFilter) {
-      filtered = filtered.filter(t => t.status === statusFilter);
-    }
-
-    // Apply language filter
-    if (languageFilter) {
-      filtered = filtered.filter(t => t.language === languageFilter);
-    }
-
-    // Apply date filter
-    if (dateFilter) {
-      const filterDate = new Date(dateFilter);
-      filtered = filtered.filter(t => {
-        const transcriptionDate = new Date(t.created_at);
-        return transcriptionDate.getFullYear() === filterDate.getFullYear() &&
-               transcriptionDate.getMonth() === filterDate.getMonth() &&
-               transcriptionDate.getDate() === filterDate.getDate();
-      });
-    }
+    let sorted = [...allSavedTranscriptions];
 
     // Apply sorting
-    filtered.sort((a, b) => {
+    sorted.sort((a, b) => {
       // First, sort by status (pending first, then done)
       const aStatus = a.status || 'pending';
       const bStatus = b.status || 'pending';
@@ -310,31 +307,31 @@ function App() {
       return 0;
     });
 
-    setTotalItems(filtered.length);
+    setSavedTranscriptions(sorted);
+  }, [allSavedTranscriptions, sortField, sortDirection]);
 
-    // Apply pagination
-    const skip = (currentPage - 1) * itemsPerPage;
-    const paginated = filtered.slice(skip, skip + itemsPerPage);
-    setSavedTranscriptions(paginated);
-  }, [allSavedTranscriptions, searchTerm, statusFilter, languageFilter, dateFilter, sortField, sortDirection, currentPage, itemsPerPage]);
-
-  // Reset to page 1 when filters change
+  // Reset to page 1 when filters change (sorting doesn't require reset)
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, languageFilter, dateFilter, sortField, sortDirection]);
+  }, [searchTerm, statusFilter, languageFilter, dateFilter]);
 
   const loadTranscriptionByFilename = async (filenameToLoad: string) => {
     setLoadingSaved(true);
     try {
       const config = getAxiosConfig();
-      // Fetch all transcriptions to find by filename
+      // Search for transcription by filename and type
+      const params = new URLSearchParams();
+      params.append('search', filenameToLoad);
+      params.append('transcription_type', 'words');
+      params.append('limit', '100'); // Get more results to find the exact match
+      
       const response = await axios.get(
-        `${API_BASE_URL}/api/transcriptions?limit=1000&skip=0`,
+        `${API_BASE_URL}/api/transcriptions?${params.toString()}`,
         config
       );
       if (response.data.success) {
         const allTranscriptions = response.data.data.transcriptions || [];
-        // Find transcription by filename
+        // Find transcription by exact filename match
         const transcription = allTranscriptions.find(
           (t: SavedTranscriptionSummary) => t.filename === filenameToLoad && t.transcription_type === 'words'
         );
@@ -1225,7 +1222,7 @@ function App() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-600 mb-1">Total Audio Files</p>
-                    <p className="text-3xl font-bold text-gray-800">{allSavedTranscriptions.length}</p>
+                    <p className="text-3xl font-bold text-gray-800">{statistics.total}</p>
                   </div>
                   <div className="bg-blue-100 rounded-full p-3">
                     <Database className="h-8 w-8 text-blue-600" />
@@ -1239,7 +1236,7 @@ function App() {
                   <div>
                     <p className="text-sm font-medium text-gray-600 mb-1">Files Annotated</p>
                     <p className="text-3xl font-bold text-gray-800">
-                      {allSavedTranscriptions.filter(t => t.status === 'done').length}
+                      {statistics.done}
                     </p>
                   </div>
                   <div className="bg-green-100 rounded-full p-3">
@@ -1254,7 +1251,7 @@ function App() {
                   <div>
                     <p className="text-sm font-medium text-gray-600 mb-1">Pending Files</p>
                     <p className="text-3xl font-bold text-gray-800">
-                      {allSavedTranscriptions.filter(t => t.status === 'pending' || !t.status).length}
+                      {statistics.pending}
                     </p>
                   </div>
                   <div className="bg-yellow-100 rounded-full p-3">
@@ -1269,7 +1266,7 @@ function App() {
                   <div>
                     <p className="text-sm font-medium text-gray-600 mb-1">Flagged Files</p>
                     <p className="text-3xl font-bold text-gray-800">
-                      {allSavedTranscriptions.filter(t => t.is_flagged === true).length}
+                      {statistics.flagged}
                     </p>
                   </div>
                   <div className="bg-red-100 rounded-full p-3">
@@ -1559,7 +1556,7 @@ function App() {
               {totalItems > itemsPerPage && (
                     <div className="mt-6 flex items-center justify-between border-t border-gray-200 pt-4">
                       <div className="flex items-center text-sm text-gray-700">
-                      Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, totalItems)} of {totalItems} transcriptions
+                      Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min((currentPage - 1) * itemsPerPage + savedTranscriptions.length, totalItems)} of {totalItems} transcriptions
                   </div>
                   <div className="flex items-center gap-2">
                     <button

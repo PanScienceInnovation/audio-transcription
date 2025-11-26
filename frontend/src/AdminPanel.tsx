@@ -68,6 +68,8 @@ function AdminPanel() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(20); // 20 items per page
+  const [totalItems, setTotalItems] = useState(0); // Total items from backend
+  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, total_done_duration: 0 }); // Statistics from backend
   const [selectedTranscriptions, setSelectedTranscriptions] = useState<Set<string>>(new Set());
   const [bulkAssignUserId, setBulkAssignUserId] = useState<string>('');
   const [bulkAssigning, setBulkAssigning] = useState(false);
@@ -98,6 +100,14 @@ function AdminPanel() {
     setCurrentPage(1);
   }, [searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, flaggedFilter]);
 
+  // Reload data when page changes or filters change
+  useEffect(() => {
+    if (isAdmin) {
+      loadData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, flaggedFilter, isAdmin]);
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -109,10 +119,30 @@ function AdminPanel() {
         setUsers(usersResponse.data.users.filter((u: User) => !u.is_admin)); // Exclude admins from assignment list
       }
 
-      // Load transcriptions
-      const transcriptionsResponse = await axios.get(`${API_BASE_URL}/api/transcriptions?limit=1000`, config);
+      // Load statistics (overall counts, not filtered)
+      const statsResponse = await axios.get(`${API_BASE_URL}/api/transcriptions/statistics`, config);
+      if (statsResponse.data.success) {
+        setStatistics(statsResponse.data.data);
+      }
+
+      // Build query parameters for transcriptions
+      const params = new URLSearchParams();
+      params.append('limit', itemsPerPage.toString());
+      params.append('skip', ((currentPage - 1) * itemsPerPage).toString());
+      
+      if (searchTerm) params.append('search', searchTerm);
+      if (languageFilter) params.append('language', languageFilter);
+      if (dateFilter) params.append('date', dateFilter);
+      if (statusFilter) params.append('status', statusFilter);
+      if (assignedUserFilter) params.append('assigned_user', assignedUserFilter);
+      if (flaggedFilter) params.append('flagged', flaggedFilter);
+
+      // Load transcriptions with pagination and filters
+      const transcriptionsResponse = await axios.get(`${API_BASE_URL}/api/transcriptions?${params.toString()}`, config);
       if (transcriptionsResponse.data.success) {
         setTranscriptions(transcriptionsResponse.data.data.transcriptions);
+        // Store total count for pagination
+        setTotalItems(transcriptionsResponse.data.data.total || 0);
       }
     } catch (error: any) {
       setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to load data' });
@@ -469,69 +499,20 @@ function AdminPanel() {
     return parts.length > 0 ? parts.join(', ') : '0 hours';
   };
 
-  // Calculate total duration of files with status "done"
-  const totalDoneDuration = transcriptions
-    .filter(t => t.status === 'done' && t.audio_duration)
-    .reduce((sum, t) => sum + (t.audio_duration || 0), 0);
+  // Total duration is now fetched from backend statistics
+  const totalDoneDuration = statistics.total_done_duration || 0;
 
-  // Get unique languages for filter dropdown
+  // Get unique languages for filter dropdown (from all transcriptions, not just current page)
+  // Note: This might need to be loaded separately or cached
   const uniqueLanguages = Array.from(new Set(transcriptions.map(t => t.language).filter(Boolean))).sort();
 
-  // Filter transcriptions based on search term, language, date, status, assigned user, and flagged status
-  const filteredTranscriptions = transcriptions.filter(t => {
-    // Search term filter
-    const searchLower = searchTerm.toLowerCase();
-    const matchesSearch = !searchTerm || (
-      t.filename.toLowerCase().includes(searchLower) ||
-      getUserName(t.assigned_user_id).toLowerCase().includes(searchLower) ||
-      (t.status && t.status.toLowerCase().includes(searchLower))
-    );
-
-    // Language filter
-    const matchesLanguage = !languageFilter || t.language === languageFilter;
-
-    // Date filter
-    let matchesDate = true;
-    if (dateFilter) {
-      const transcriptionDate = new Date(t.created_at);
-      const filterDate = new Date(dateFilter);
-      // Compare dates (ignore time)
-      matchesDate =
-        transcriptionDate.getFullYear() === filterDate.getFullYear() &&
-        transcriptionDate.getMonth() === filterDate.getMonth() &&
-        transcriptionDate.getDate() === filterDate.getDate();
-    }
-
-    // Status filter
-    const matchesStatus = !statusFilter || t.status === statusFilter || (!t.status && statusFilter === 'pending');
-
-    // Assigned user filter
-    let matchesAssignedUser = true;
-    if (assignedUserFilter) {
-      if (assignedUserFilter === 'unassigned') {
-        matchesAssignedUser = !t.assigned_user_id;
-      } else {
-        matchesAssignedUser = t.assigned_user_id === assignedUserFilter;
-      }
-    }
-
-    // Flagged filter
-    let matchesFlagged = true;
-    if (flaggedFilter === 'flagged') {
-      matchesFlagged = t.is_flagged === true;
-    } else if (flaggedFilter === 'not-flagged') {
-      matchesFlagged = !t.is_flagged;
-    }
-
-    return matchesSearch && matchesLanguage && matchesDate && matchesStatus && matchesAssignedUser && matchesFlagged;
-  });
-
-  // Calculate pagination
-  const totalItems = filteredTranscriptions.length;
+  // Transcriptions are already filtered and paginated by the backend
+  const paginatedTranscriptions = transcriptions;
+  
+  // Calculate pagination info
   const totalPages = Math.ceil(totalItems / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = startIndex + itemsPerPage;
-  const paginatedTranscriptions = filteredTranscriptions.slice(startIndex, endIndex);
+  const endIndex = Math.min(startIndex + paginatedTranscriptions.length, totalItems);
 
   // Handle select/deselect all
   const handleSelectAll = (checked: boolean) => {
@@ -657,13 +638,14 @@ function AdminPanel() {
           </div>
 
           {/* Insight Cards */}
+          {/* Note: Stats shown are for the current filtered view, not all transcriptions */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             {/* Total Audio Files Card */}
             <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-gray-600 mb-1">Total Audio Files</p>
-                  <p className="text-3xl font-bold text-gray-800">{transcriptions.length}</p>
+                  <p className="text-3xl font-bold text-gray-800">{statistics.total}</p>
                 </div>
                 <div className="bg-blue-100 rounded-full p-3">
                   <FileText className="h-8 w-8 text-blue-600" />
@@ -677,7 +659,7 @@ function AdminPanel() {
                 <div>
                   <p className="text-sm font-medium text-gray-600 mb-1">Files Annotated</p>
                   <p className="text-3xl font-bold text-gray-800">
-                    {transcriptions.filter(t => t.status === 'done').length}
+                    {statistics.done}
                   </p>
                 </div>
                 <div className="bg-green-100 rounded-full p-3">
@@ -692,7 +674,7 @@ function AdminPanel() {
                 <div>
                   <p className="text-sm font-medium text-gray-600 mb-1">Pending Files</p>
                   <p className="text-3xl font-bold text-gray-800">
-                    {transcriptions.filter(t => t.status === 'pending' || !t.status).length}
+                    {statistics.pending}
                   </p>
                 </div>
                 <div className="bg-yellow-100 rounded-full p-3">
@@ -707,7 +689,7 @@ function AdminPanel() {
                 <div>
                   <p className="text-sm font-medium text-gray-600 mb-1">Flagged Files</p>
                   <p className="text-3xl font-bold text-gray-800">
-                    {transcriptions.filter(t => t.is_flagged === true).length}
+                    {statistics.flagged}
                   </p>
                 </div>
                 <div className="bg-red-100 rounded-full p-3">
@@ -809,7 +791,7 @@ function AdminPanel() {
                       Clear All Filters
                     </button>
                     <span className="text-xs text-gray-500">
-                      {filteredTranscriptions.length} of {transcriptions.length} files shown
+                      {totalItems} file{totalItems !== 1 ? 's' : ''} total
                     </span>
                   </div>
                 )}

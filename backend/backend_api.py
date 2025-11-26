@@ -961,7 +961,7 @@ def save_to_database():
 @app.route('/api/transcriptions', methods=['GET'])
 def list_transcriptions():
     """
-    List saved transcriptions from MongoDB.
+    List saved transcriptions from MongoDB with filtering and pagination.
     Regular users can only see transcriptions assigned to them.
     Admins can see all transcriptions.
     
@@ -972,42 +972,80 @@ def list_transcriptions():
     Query Parameters:
         - limit: Maximum number of results (default: 100)
         - skip: Number of results to skip (default: 0)
+        - search: Search term for filename (case-insensitive partial match)
+        - language: Filter by language (exact match)
+        - date: Filter by date (YYYY-MM-DD format, matches created_at date)
+        - status: Filter by status ('done', 'pending', 'flagged')
+        - assigned_user: Filter by assigned user ID (or 'unassigned' for None)
+        - flagged: Filter by flagged status ('flagged' or 'not-flagged')
+        - transcription_type: Filter by transcription type ('words' or 'phrases')
     """
+    start_time = time.time()
     try:
         limit = int(request.args.get('limit', 100))
         skip = int(request.args.get('skip', 0))
+        search = request.args.get('search', '').strip() or None
+        language = request.args.get('language', '').strip() or None
+        date = request.args.get('date', '').strip() or None
+        status = request.args.get('status', '').strip() or None
+        assigned_user = request.args.get('assigned_user', '').strip() or None
+        flagged = request.args.get('flagged', '').strip() or None
+        transcription_type = request.args.get('transcription_type', '').strip() or None
+        
+        print(f"⏱️  [TIMING] list_transcriptions started - limit={limit}, skip={skip}, filters={{search={search}, language={language}, date={date}, status={status}, assigned_user={assigned_user}, flagged={flagged}, transcription_type={transcription_type}}}")
         
         # Get user info from headers
         user_id, is_admin = get_user_from_request()
         
+        auth_time = time.time()
+        print(f"⏱️  [TIMING] Authentication check took {(auth_time - start_time)*1000:.2f}ms")
+        
         # For non-admin users, user_id is required
         if not is_admin and not user_id:
+            elapsed = (time.time() - start_time) * 1000
+            print(f"⏱️  [TIMING] list_transcriptions failed (auth error) - total: {elapsed:.2f}ms")
             return jsonify({
                 'success': False,
                 'error': 'User ID is required. Please provide X-User-ID header.'
             }), 400
         
+        db_start_time = time.time()
         result = storage_manager.list_transcriptions(
             limit=limit, 
             skip=skip, 
             user_id=user_id, 
-            is_admin=is_admin
+            is_admin=is_admin,
+            search=search,
+            language=language,
+            date=date,
+            status=status,
+            assigned_user=assigned_user,
+            flagged=flagged,
+            transcription_type=transcription_type
         )
+        db_time = (time.time() - db_start_time) * 1000
+        print(f"⏱️  [TIMING] Database query took {db_time:.2f}ms")
+        
+        total_time = (time.time() - start_time) * 1000
         
         if result['success']:
+            print(f"⏱️  [TIMING] list_transcriptions completed successfully - total: {total_time:.2f}ms, found: {len(result.get('transcriptions', []))} items, total: {result.get('total', 0)}")
             return jsonify({
                 'success': True,
                 'data': result
             })
         else:
+            print(f"⏱️  [TIMING] list_transcriptions failed (db error) - total: {total_time:.2f}ms")
             return jsonify({
                 'success': False,
                 'error': result.get('error', 'Failed to list transcriptions')
             }), 500
     
     except Exception as e:
+        elapsed = (time.time() - start_time) * 1000
         error_trace = traceback.format_exc()
         print(f"❌ Error listing transcriptions: {str(e)}")
+        print(f"⏱️  [TIMING] list_transcriptions failed (exception) - total: {elapsed:.2f}ms")
         print(error_trace)
         
         return jsonify({
@@ -1400,6 +1438,61 @@ def delete_transcription_by_id(transcription_id):
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"❌ Error deleting transcription: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/transcriptions/statistics', methods=['GET'])
+def get_transcription_statistics():
+    """
+    Get statistics about transcriptions (total, done, pending, flagged counts).
+    Regular users only see statistics for transcriptions assigned to them.
+    Admins see statistics for all transcriptions.
+    
+    Headers:
+        - X-User-ID: User ID (required for non-admin users)
+        - X-Is-Admin: 'true' or 'false' (default: 'false')
+    
+    Query Parameters:
+        - transcription_type: Filter by transcription type ('words' or 'phrases')
+    """
+    try:
+        transcription_type = request.args.get('transcription_type', '').strip() or None
+        
+        # Get user info from headers
+        user_id, is_admin = get_user_from_request()
+        
+        # For non-admin users, user_id is required
+        if not is_admin and not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'User ID is required. Please provide X-User-ID header.'
+            }), 400
+        
+        result = storage_manager.get_transcription_statistics(
+            user_id=user_id,
+            is_admin=is_admin,
+            transcription_type=transcription_type
+        )
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'data': result['statistics']
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to get statistics')
+            }), 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error getting transcription statistics: {str(e)}")
         print(error_trace)
         
         return jsonify({

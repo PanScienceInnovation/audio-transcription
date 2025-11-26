@@ -154,7 +154,7 @@ function PhrasesApp() {
       const config = getAxiosConfig();
       // Fetch all transcriptions first to filter and get total count
       const response = await axios.get(
-        `${API_BASE_URL}/api/transcriptions?limit=1000&skip=0`,
+        `${API_BASE_URL}/api/transcriptions?limit=50&skip=0`,
         config
       );
       if (response.data.success) {
