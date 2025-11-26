@@ -27,35 +27,84 @@ USERS = [
     {
         'username': 'user1',
         'password': 'password1',
-        'email': 'user1@example.com',
+        'email': 'user1@phonex.ai',
         'name': 'User One',
         'is_admin': False
     },
     {
         'username': 'user2',
         'password': 'password2',
-        'email': 'user2@example.com',
+        'email': 'user2@phonex.ai',
         'name': 'User Two',
         'is_admin': False
     },
     {
         'username': 'user3',
         'password': 'password3',
-        'email': 'user3@example.com',
+        'email': 'user3@phonex.ai',
         'name': 'User Three',
         'is_admin': False
     },
     {
         'username': 'user4',
         'password': 'password4',
-        'email': 'user4@example.com',
+        'email': 'user4@phonex.ai',
         'name': 'User Four',
+        'is_admin': False
+    },
+    {
+        'username': 'user5',
+        'password': 'password5',
+        'email': 'user5@phonex.ai',
+        'name': 'User Five',
+        'is_admin': False
+    },
+    {
+        'username': 'user6',
+        'password': 'password6',
+        'email': 'user6@phonex.ai',
+        'name': 'User Six',
+        'is_admin': False
+    },
+    {
+        'username': 'user7',
+        'password': 'password7',
+        'email': 'user7@phonex.ai',
+        'name': 'User Seven',
+        'is_admin': False
+    },
+    {
+        'username': 'user8',
+        'password': 'password8',
+        'email': 'user8@phonex.ai',
+        'name': 'User Eight',
+        'is_admin': False
+    },
+    {
+        'username': 'user9',
+        'password': 'password9',
+        'email': 'user9@phonex.ai',
+        'name': 'User Nine',
+        'is_admin': False
+    },
+    {
+        'username': 'user10',
+        'password': 'password10',
+        'email': 'user10@phonex.ai',
+        'name': 'User Ten',
+        'is_admin': False
+    },
+    {
+        'username': 'Annotator',
+        'password': 'annotator@123',
+        'email': 'annotator@phonex.ai',
+        'name': 'Annotator',
         'is_admin': False
     },
     {
         'username': 'admin',
         'password': 'admin123',
-        'email': 'admin@example.com',
+        'email': 'admin@phonex.ai',
         'name': 'Administrator',
         'is_admin': True
     }
