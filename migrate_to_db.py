@@ -1,5 +1,8 @@
+#!/usr/bin/env python3
 """
-Script to upload audio files from data/s3_data/ to S3 and store metadata in MongoDB.
+Script to process flagged data from data/flagged_data/data_2:
+- Upload audio.mp3 files to S3
+- Transform and save transcription metadata to MongoDB
 """
 import os
 import json
@@ -37,16 +40,93 @@ def parse_timestamp(timestamp_str: str) -> float:
         return 0.0
 
 
-def read_ref_text(ref_text_path: str) -> str:
-    """Read reference text from file."""
-    try:
-        if not os.path.exists(ref_text_path):
-            return ""
-        with open(ref_text_path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
-    except Exception as e:
-        print(f"⚠️  Warning: Could not read ref_text.txt: {e}")
-        return ""
+def detect_language(text: str) -> str:
+    """Detect language from text (simple heuristic)."""
+    # Common language detection based on character ranges
+    if any('\u0980' <= char <= '\u09FF' for char in text):  # Bengali
+        return "Bengali"
+    elif any('\u0A80' <= char <= '\u0AFF' for char in text):  # Gujarati
+        return "Gujarati"
+    elif any('\u0900' <= char <= '\u097F' for char in text):  # Hindi/Devanagari
+        return "Hindi"
+    elif any('\u0C80' <= char <= '\u0CFF' for char in text):  # Kannada
+        return "Kannada"
+    elif any('\u0D00' <= char <= '\u0D7F' for char in text):  # Malayalam
+        return "Malayalam"
+    elif any('\u0B00' <= char <= '\u0B7F' for char in text):  # Odia
+        return "Odia"
+    elif any('\u0A00' <= char <= '\u0A7F' for char in text):  # Gurmukhi (Punjabi)
+        return "Punjabi"
+    elif any('\u0B80' <= char <= '\u0BFF' for char in text):  # Tamil
+        return "Tamil"
+    elif any('\u0C00' <= char <= '\u0C7F' for char in text):  # Telugu
+        return "Telugu"
+    else:
+        return "English"  # Default
+
+
+def clean_word(word: str) -> str:
+    """Remove HTML-like tags from word (e.g., <AI>...</AI>)."""
+    import re
+    # Remove <AI>...</AI> tags
+    word = re.sub(r'<AI>.*?</AI>', '', word)
+    # Remove any remaining HTML-like tags
+    word = re.sub(r'<[^>]+>', '', word)
+    return word.strip()
+
+
+def transform_annotations_to_words(annotations: list, language: Optional[str] = None) -> Tuple[list, str]:
+    """
+    Transform annotations format to words format for MongoDB.
+    
+    Args:
+        annotations: List of annotation objects with 'start', 'end', 'Transcription'
+        language: Optional language hint
+        
+    Returns:
+        Tuple of (words list, detected language)
+    """
+    words = []
+    detected_language = language or "Gujarati"  # Default based on sample data
+    
+    for annotation in annotations:
+        start_str = annotation.get('start', '0:00:00.000000')
+        end_str = annotation.get('end', '0:00:00.000000')
+        transcription_list = annotation.get('Transcription', [])
+        
+        if not transcription_list:
+            continue
+        
+        # Get the word (first element of Transcription array)
+        word_text = transcription_list[0] if isinstance(transcription_list, list) else str(transcription_list)
+        
+        # Clean the word (remove HTML tags)
+        word_text = clean_word(word_text)
+        
+        if not word_text:
+            continue
+        
+        # Detect language from first word if not provided
+        if not language:
+            detected_language = detect_language(word_text)
+        
+        # Parse timestamps
+        start_seconds = parse_timestamp(start_str)
+        end_seconds = parse_timestamp(end_str)
+        duration = end_seconds - start_seconds
+        
+        # Create word object
+        word_obj = {
+            'start': start_str,
+            'end': end_str,
+            'duration': round(duration, 2),
+            'word': word_text,
+            'language': detected_language
+        }
+        
+        words.append(word_obj)
+    
+    return words, detected_language
 
 
 def read_json_data(json_path: str) -> Optional[Dict[str, Any]]:
@@ -70,7 +150,7 @@ def process_folder(folder_path: str, storage_manager: StorageManager,
     Process a single folder: upload audio to S3 and save metadata to MongoDB.
     
     Args:
-        folder_path: Path to the folder containing audio.mp3, {folder_id}.json, ref_text.txt
+        folder_path: Path to the folder containing audio.mp3, transcriptions/{folder_id}.json, ref_text.txt
         storage_manager: StorageManager instance for S3 and MongoDB operations
         user_id: User ID to associate with the transcription (default: 'anonymous')
         
@@ -84,17 +164,27 @@ def process_folder(folder_path: str, storage_manager: StorageManager,
     
     # Define file paths
     audio_path = os.path.join(folder_path, 'audio.mp3')
-    json_path = os.path.join(folder_path, f'{folder_id}.json')
-    ref_text_path = os.path.join(folder_path, 'ref_text.txt')
+    transcriptions_dir = os.path.join(folder_path, 'transcriptions')
+    
+    # Find JSON file in transcriptions folder
+    json_files = []
+    if os.path.exists(transcriptions_dir):
+        for file in os.listdir(transcriptions_dir):
+            if file.endswith('.json'):
+                json_files.append(os.path.join(transcriptions_dir, file))
+    
+    if not json_files:
+        error_msg = f"❌ No JSON file found in transcriptions folder: {transcriptions_dir}"
+        print(error_msg)
+        return False, error_msg
+    
+    # Use the first JSON file found
+    json_path = json_files[0]
+    print(f"   Using JSON file: {os.path.basename(json_path)}")
     
     # Validate required files exist
     if not os.path.exists(audio_path):
         error_msg = f"❌ Audio file not found: {audio_path}"
-        print(error_msg)
-        return False, error_msg
-    
-    if not os.path.exists(json_path):
-        error_msg = f"❌ JSON file not found: {json_path}"
         print(error_msg)
         return False, error_msg
     
@@ -104,10 +194,23 @@ def process_folder(folder_path: str, storage_manager: StorageManager,
         error_msg = f"❌ Failed to read JSON data from {json_path}"
         return False, error_msg
     
-    # Read ref_text (optional - continue if missing)
-    ref_text = read_ref_text(ref_text_path)
-    if not ref_text:
-        print(f"⚠️  Warning: ref_text.txt not found or empty for {folder_id}")
+    # Get annotations
+    annotations = json_data.get('annotations', [])
+    if not annotations:
+        error_msg = f"❌ No annotations found in JSON file: {json_path}"
+        print(error_msg)
+        return False, error_msg
+    
+    # Transform annotations to words format
+    print(f"   Transforming {len(annotations)} annotations to words format...")
+    words, detected_language = transform_annotations_to_words(annotations)
+    
+    if not words:
+        error_msg = f"❌ No valid words extracted from annotations"
+        print(error_msg)
+        return False, error_msg
+    
+    print(f"   Extracted {len(words)} words, detected language: {detected_language}")
     
     # Get audio duration
     try:
@@ -115,36 +218,22 @@ def process_folder(folder_path: str, storage_manager: StorageManager,
         print(f"   Audio duration: {audio_duration:.2f} seconds")
     except Exception as e:
         print(f"⚠️  Warning: Could not calculate audio duration: {e}")
-        audio_duration = None
+        audio_duration = 0.0
     
-    # Get file size
-    file_size = os.path.getsize(audio_path)
-    
-    # Prepare transcription_data for MongoDB
+    # Prepare transcription_data for MongoDB (matching the schema)
     transcription_data = {
-        # Original annotation data from JSON
-        'annotations': json_data.get('annotations', []),
-        'id': json_data.get('id'),
-        'filename': json_data.get('filename', 'audio.mp3'),
-        
-        # Additional metadata
-        'ref_text': ref_text,
-        'audio_path': f'{folder_id}_audio.mp3',  # Filename format as requested
-        'source_folder_id': folder_id,
-        'transcription_type': 'annotations',
-        'total_annotations': len(json_data.get('annotations', []))
+        'words': words,
+        'audio_duration': round(audio_duration, 2),
+        'total_words': len(words),
+        'transcription_type': 'words',
+        'language': detected_language,
+        'metadata': {
+            'audio_path': f"/api/audio/{folder_id}_audio.mp3",
+            'filename': f"{folder_id}_audio.mp3"
+        }
     }
     
-    # Add audio_duration if available
-    if audio_duration is not None:
-        transcription_data['audio_duration'] = audio_duration
-    
-    # Try to infer language from annotations (if possible)
-    # This is optional - can be added later if needed
-    if json_data.get('language'):
-        transcription_data['language'] = json_data['language']
-    
-    # Prepare S3 key
+    # Generate S3 key without timestamp prefix
     s3_key = f"audio/{folder_id}_audio.mp3"
     
     # Upload to S3
@@ -195,9 +284,9 @@ def check_duplicate(folder_id: str, storage_manager: StorageManager) -> bool:
         if not storage_manager.collection:
             return False
         
-        # Check if any document has this folder_id in transcription_data.source_folder_id
+        # Check if any document has this folder_id in the filename
         existing = storage_manager.collection.find_one({
-            'transcription_data.source_folder_id': folder_id
+            'transcription_data.metadata.filename': f"{folder_id}_audio.mp3"
         })
         
         return existing is not None
@@ -207,18 +296,18 @@ def check_duplicate(folder_id: str, storage_manager: StorageManager) -> bool:
 
 
 def main():
-    """Main function to process all folders in data/s3_data/."""
+    """Main function to process all folders in data/flagged_data/data_2/."""
     # Configuration
-    s3_data_dir = os.path.join(os.path.dirname(__file__), 'data', 's3_data')
+    data_dir = os.path.join(os.path.dirname(__file__), 'data', 'flagged_data', 'data_2')
     user_id = os.getenv('UPLOAD_USER_ID', 'anonymous')  # Optional: set user ID
     
     # Check if directory exists
-    if not os.path.exists(s3_data_dir):
-        print(f"❌ Error: Directory not found: {s3_data_dir}")
+    if not os.path.exists(data_dir):
+        print(f"❌ Error: Directory not found: {data_dir}")
         sys.exit(1)
     
-    print("🚀 Starting S3 Data Upload Process")
-    print(f"   Source directory: {s3_data_dir}")
+    print("🚀 Starting Flagged Data Processing")
+    print(f"   Source directory: {data_dir}")
     print(f"   User ID: {user_id}")
     print()
     
@@ -237,11 +326,12 @@ def main():
     print("✅ StorageManager initialized successfully")
     print()
     
-    # Get all folders
+    # Get all folders (subdirectories with numeric names)
     folders = []
-    for item in os.listdir(s3_data_dir):
-        item_path = os.path.join(s3_data_dir, item)
+    for item in os.listdir(data_dir):
+        item_path = os.path.join(data_dir, item)
         if os.path.isdir(item_path) and not item.startswith('.'):
+            # Check if it's a numeric folder name (or any folder)
             folders.append(item_path)
     
     total_folders = len(folders)
@@ -289,7 +379,7 @@ def main():
     # Print summary
     print()
     print("=" * 60)
-    print("📊 UPLOAD SUMMARY")
+    print("📊 PROCESSING SUMMARY")
     print("=" * 60)
     print(f"   Total folders: {total_folders}")
     print(f"   ✅ Successful: {successful}")
@@ -306,7 +396,7 @@ def main():
             print(f"   ... and {len(errors) - 10} more errors")
         print()
     
-    print("✨ Upload process completed!")
+    print("✨ Processing completed!")
     
     if failed > 0:
         sys.exit(1)
