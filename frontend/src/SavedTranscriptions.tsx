@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit, ChevronLeft, ChevronRight, Search, ArrowUpDown, ArrowUp, ArrowDown, FolderOpen, Flag } from 'lucide-react';
+import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit, ChevronLeft, ChevronRight, Search, ArrowUpDown, ArrowUp, ArrowDown, FolderOpen, Flag, History } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
@@ -140,6 +140,10 @@ function SavedTranscriptions() {
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newFilename, setNewFilename] = useState('');
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [versionHistory, setVersionHistory] = useState<any[]>([]);
+  const [loadingVersionHistory, setLoadingVersionHistory] = useState(false);
+  const [clearingVersionHistory, setClearingVersionHistory] = useState(false);
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -665,6 +669,62 @@ function SavedTranscriptions() {
     }
   };
 
+  const fetchVersionHistory = async (transcriptionId: string) => {
+    setLoadingVersionHistory(true);
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.get(
+        `${API_BASE_URL}/api/transcriptions/${transcriptionId}/version-history`,
+        config
+      );
+      if (response.data.success) {
+        setVersionHistory(response.data.data.version_history || []);
+        setShowVersionHistory(true);
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error fetching version history:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setLoadingVersionHistory(false);
+    }
+  };
+
+  const clearVersionHistory = async (transcriptionId: string) => {
+    const confirmed = window.confirm(
+      'Are you sure you want to clear all version history?\n\n' +
+      'This action cannot be undone. All version history will be permanently deleted from the database.\n\n' +
+      'This will not affect the current transcription data.'
+    );
+    
+    if (!confirmed) {
+      return;
+    }
+
+    setClearingVersionHistory(true);
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.delete(
+        `${API_BASE_URL}/api/transcriptions/${transcriptionId}/version-history`,
+        config
+      );
+      if (response.data.success) {
+        alert('Version history cleared successfully!');
+        setVersionHistory([]);
+        // Optionally close the modal
+        // setShowVersionHistory(false);
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error clearing version history:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setClearingVersionHistory(false);
+    }
+  };
+
   const deleteTranscription = async (id: string, showConfirm: boolean = true) => {
     if (showConfirm) {
       const confirmed = window.confirm(
@@ -802,7 +862,7 @@ function SavedTranscriptions() {
                     </h1>
                     <div className="flex flex-wrap gap-2 mb-2">
                       <p className="text-gray-600">
-                        Created: {new Date(selectedTranscription.created_at).toLocaleString()}
+                        Created: {new Date(selectedTranscription.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'medium' })}
                       </p>
                       {/* Display flag reason badge if present in the document structure. Note: The flag reason is stored in the root document, not inside transcription_data, but let's check where we put it. 
                           Actually, in storage.py it's at root level. We need to access it from selectedTranscription directly.
@@ -844,6 +904,23 @@ function SavedTranscriptions() {
                 >
                   <Download className="h-4 w-4 mr-2" />
                   Download
+                </button>
+                <button
+                  onClick={() => selectedTranscription && fetchVersionHistory(selectedTranscription._id)}
+                  disabled={loadingVersionHistory}
+                  className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
+                >
+                  {loadingVersionHistory ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Loading...
+                    </>
+                  ) : (
+                    <>
+                      <History className="h-4 w-4 mr-2" />
+                      Version History
+                    </>
+                  )}
                 </button>
                 <div className="relative">
                   <button
@@ -1382,7 +1459,7 @@ function SavedTranscriptions() {
                           </span>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                          {new Date(transcription.created_at).toLocaleDateString()}
+                          {new Date(transcription.created_at).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${
@@ -1566,6 +1643,170 @@ function SavedTranscriptions() {
           </div>
         </>
       )}
+
+      {/* Version History Modal */}
+      {showVersionHistory && selectedTranscription && (
+          <>
+            <div className="fixed inset-0 bg-black bg-opacity-50 z-[200]" onClick={() => setShowVersionHistory(false)}></div>
+            <div className="fixed inset-0 z-[201] flex items-center justify-center p-4">
+              <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+                <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+                  <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                    <History className="h-6 w-6" />
+                    Version History
+                  </h2>
+                  <div className="flex items-center gap-3">
+                    {versionHistory.length > 0 && selectedTranscription && (
+                      <button
+                        onClick={() => {
+                          const transcription = selectedTranscription as TranscriptionDocument;
+                          clearVersionHistory(transcription._id);
+                        }}
+                        disabled={clearingVersionHistory}
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Clear all version history"
+                      >
+                        {clearingVersionHistory ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Clearing...
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 className="h-4 w-4" />
+                            Clear History
+                          </>
+                        )}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setShowVersionHistory(false)}
+                      className="text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      <X className="h-6 w-6" />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto p-6">
+                  {versionHistory.length === 0 ? (
+                    <div className="text-center py-12 text-gray-500">
+                      <History className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+                      <p className="text-lg">No version history available</p>
+                      <p className="text-sm mt-2">Changes will appear here after you edit and save the transcription</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {versionHistory.map((version, versionIndex) => {
+                        const versionNumber = versionHistory.length - versionIndex;
+                        
+                        // Parse timestamp to IST
+                        const timestampStr = String(version.timestamp);
+                        const utcTimestamp = timestampStr.includes('Z') || timestampStr.includes('+') || timestampStr.includes('-', 10) 
+                          ? timestampStr 
+                          : timestampStr + 'Z';
+                        const date = new Date(utcTimestamp);
+                        const formattedDate = !isNaN(date.getTime()) 
+                          ? date.toLocaleString('en-IN', { 
+                              timeZone: 'Asia/Kolkata', 
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                              second: '2-digit',
+                              hour12: true
+                            })
+                          : version.timestamp;
+                        
+                        return (
+                          <div key={versionIndex} className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
+                            <div className="flex items-center justify-between mb-4">
+                              <div className="flex items-center gap-3">
+                                <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-bold">
+                                  {versionNumber}
+                                </span>
+                                <div>
+                                  <h3 className="text-base font-semibold text-gray-900">
+                                    Version {versionNumber}
+                                    {versionIndex === 0 && (
+                                      <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded">
+                                        Latest
+                                      </span>
+                                    )}
+                                  </h3>
+                                  <p className="text-xs text-gray-500 mt-0.5">{formattedDate}</p>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            {/* Display based on change type */}
+                            {version.before && version.after ? (
+                              // Modified: Show before and after
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-700 mb-2">Before</p>
+                                  <div className="bg-red-50 p-3 rounded border border-red-200">
+                                    <p className="text-sm font-medium text-gray-900 mb-1">
+                                      {version.before.word || 'N/A'}
+                                    </p>
+                                    <p className="text-xs text-gray-600">Start: {version.before.start || 'N/A'}</p>
+                                    <p className="text-xs text-gray-600">End: {version.before.end || 'N/A'}</p>
+                                  </div>
+                                </div>
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-700 mb-2">After</p>
+                                  <div className="bg-green-50 p-3 rounded border border-green-200">
+                                    <p className="text-sm font-medium text-gray-900 mb-1">
+                                      {version.after.word || 'N/A'}
+                                    </p>
+                                    <p className="text-xs text-gray-600">Start: {version.after.start || 'N/A'}</p>
+                                    <p className="text-xs text-gray-600">End: {version.after.end || 'N/A'}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : version.after ? (
+                              // Added: Show only after
+                              <div>
+                                <p className="text-xs font-semibold text-gray-700 mb-2">Word Added</p>
+                                <div className="bg-green-50 p-3 rounded border border-green-200">
+                                  <p className="text-sm font-medium text-gray-900 mb-1">
+                                    {version.after.word || 'N/A'}
+                                  </p>
+                                  <p className="text-xs text-gray-600">Start: {version.after.start || 'N/A'}</p>
+                                  <p className="text-xs text-gray-600">End: {version.after.end || 'N/A'}</p>
+                                </div>
+                              </div>
+                            ) : version.before ? (
+                              // Deleted: Show only before
+                              <div>
+                                <p className="text-xs font-semibold text-gray-700 mb-2">Word Deleted</p>
+                                <div className="bg-red-50 p-3 rounded border border-red-200">
+                                  <p className="text-sm font-medium text-gray-900 mb-1 line-through">
+                                    {version.before.word || 'N/A'}
+                                  </p>
+                                  <p className="text-xs text-gray-600">Start: {version.before.start || 'N/A'}</p>
+                                  <p className="text-xs text-gray-600">End: {version.before.end || 'N/A'}</p>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                <div className="p-6 border-t border-gray-200 flex justify-end">
+                  <button
+                    onClick={() => setShowVersionHistory(false)}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-6 rounded-lg transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+              </div>
+            </>
+          )}
     </main>
   );
 }

@@ -1197,6 +1197,85 @@ def flag_transcription(transcription_id):
         }), 500
 
 
+@app.route('/api/transcriptions/<transcription_id>/version-history', methods=['GET'])
+def get_version_history(transcription_id):
+    """
+    Get version history for a transcription.
+    Regular users can only access version history for transcriptions assigned to them.
+    Admins can access version history for all transcriptions.
+    
+    Headers:
+        - X-User-ID: User ID (required for non-admin users)
+        - X-Is-Admin: 'true' or 'false' (default: 'false')
+    """
+    try:
+        # Get user info from headers
+        user_id, is_admin = get_user_from_request()
+        
+        result = storage_manager.get_version_history(transcription_id, user_id=user_id, is_admin=is_admin)
+        
+        if result is None:
+            return jsonify({
+                'success': False,
+                'error': 'Transcription not found or access denied'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error getting version history: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/transcriptions/<transcription_id>/version-history', methods=['DELETE'])
+def clear_version_history(transcription_id):
+    """
+    Clear version history for a transcription.
+    Regular users can only clear version history for transcriptions assigned to them.
+    Admins can clear version history for all transcriptions.
+    
+    Headers:
+        - X-User-ID: User ID (required for non-admin users)
+        - X-Is-Admin: 'true' or 'false' (default: 'false')
+    """
+    try:
+        # Get user info from headers
+        user_id, is_admin = get_user_from_request()
+        
+        result = storage_manager.clear_version_history(transcription_id, user_id=user_id, is_admin=is_admin)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'message': result.get('message', 'Version history cleared successfully'),
+                'document_id': result.get('document_id')
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to clear version history')
+            }), 400 if 'Access denied' in result.get('error', '') else 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error clearing version history: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/transcriptions/<transcription_id>/status', methods=['PUT'])
 def update_transcription_status(transcription_id):
     """
@@ -1800,6 +1879,9 @@ if __name__ == '__main__':
     print("   GET  /api/transcriptions              - List saved transcriptions (filtered by user)")
     print("   GET  /api/transcriptions/<id>         - Get transcription by ID (access controlled)")
     print("   PUT  /api/transcriptions/<id>         - Update transcription by ID")
+    print("   GET  /api/transcriptions/<id>/version-history - Get version history (access controlled)")
+    print("   DELETE /api/transcriptions/<id>/version-history - Clear version history (access controlled)")
+    print("   POST /api/transcriptions/<id>/flag    - Flag/unflag transcription")
     print("   DELETE /api/transcriptions/<id>       - Delete transcription by ID (admin only)")
     print("   POST /api/admin/transcriptions/<id>/assign - Assign transcription to user (admin)")
     print("   POST /api/admin/transcriptions/<id>/unassign - Unassign transcription (admin)")

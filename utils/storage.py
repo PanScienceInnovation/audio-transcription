@@ -61,6 +61,9 @@ class StorageManager:
             # Get collection (MongoDB creates it automatically on first insert)
             self.collection = self.db[self.mongodb_collection]
             
+            # Create version history collection
+            self.version_history_collection = self.db['transcription_version_history']
+            
             # Create indexes for better query performance
             try:
                 self.collection.create_index('created_at')
@@ -68,6 +71,10 @@ class StorageManager:
                 self.collection.create_index('assigned_user_id')  # Index for filtering by assigned user
                 self.collection.create_index([('user_id', 1), ('created_at', -1)])  # Compound index
                 self.collection.create_index([('assigned_user_id', 1), ('created_at', -1)])  # Compound index for assigned user queries
+                
+                # Create indexes for version history collection
+                self.version_history_collection.create_index('transcription_id')
+                self.version_history_collection.create_index([('transcription_id', 1), ('timestamp', -1)])  # Compound index for efficient queries
                 print(f"✅ Created indexes on 'created_at', 'user_id', and 'assigned_user_id' fields")
             except Exception as e:
                 # Index might already exist, which is fine
@@ -75,6 +82,7 @@ class StorageManager:
             
             print(f"✅ Connected to MongoDB: {self.mongodb_database}")
             print(f"   Collection: {self.mongodb_collection}")
+            print(f"   Version History Collection: transcription_version_history")
             print(f"   Existing collections: {collections if collections else 'None (will be created on first insert)'}")
             
         except Exception as e:
@@ -82,6 +90,7 @@ class StorageManager:
             self.mongo_client = None
             self.db = None
             self.collection = None
+            self.version_history_collection = None
     
     def _get_content_type(self, file_path: str) -> str:
         """Get content type based on file extension."""
@@ -1091,6 +1100,7 @@ class StorageManager:
     def update_transcription(self, document_id: str, transcription_data: Dict[str, Any], user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Update transcription data in MongoDB (all users can update all data).
+        Tracks version history of word and timestamp changes.
         
         Args:
             document_id: MongoDB document ID
@@ -1116,6 +1126,175 @@ class StorageManager:
                     'success': False,
                     'error': 'Transcription not found'
                 }
+            
+            # Get current transcription data
+            current_transcription_data = current_doc.get('transcription_data', {})
+            
+            # Track version history - find the FIRST change only
+            change_found = None
+            
+            # Compare words if transcription type is 'words'
+            if transcription_data.get('transcription_type') == 'words':
+                old_words = current_transcription_data.get('words', [])
+                new_words = transcription_data.get('words', [])
+                
+                # Create a function to create a unique key for a word
+                def word_key(word):
+                    """Create a unique key for a word based on its content."""
+                    return (word.get('word', ''), str(word.get('start', '')), str(word.get('end', '')))
+                
+                # Build sets of word keys for efficient lookup
+                old_word_keys = {word_key(w) for w in old_words}
+                new_word_keys = {word_key(w) for w in new_words}
+                
+                # PRIORITY 1: Check for modifications first (words at same position that changed)
+                # This must be checked before additions/deletions to avoid false positives
+                for i in range(min(len(old_words), len(new_words))):
+                    old_word = old_words[i]
+                    new_word = new_words[i]
+                    old_key = word_key(old_word)
+                    new_key = word_key(new_word)
+                    
+                    if old_key != new_key:
+                        # Check if this is a true modification (not a move)
+                        # If old_word exists elsewhere in new_words, it was moved, not modified
+                        # If new_word exists elsewhere in old_words, it was moved, not modified
+                        old_exists_elsewhere = any(word_key(w) == old_key for j, w in enumerate(new_words) if j != i)
+                        new_exists_elsewhere = any(word_key(w) == new_key for j, w in enumerate(old_words) if j != i)
+                        
+                        if not old_exists_elsewhere and not new_exists_elsewhere:
+                            # True modification at this position
+                            change_found = {
+                                'before': {
+                                    'word': old_word.get('word', ''),
+                                    'start': old_word.get('start', ''),
+                                    'end': old_word.get('end', '')
+                                },
+                                'after': {
+                                    'word': new_word.get('word', ''),
+                                    'start': new_word.get('start', ''),
+                                    'end': new_word.get('end', '')
+                                }
+                            }
+                            break
+                
+                # PRIORITY 2: If no modification found, check for additions (words in new but not in old)
+                if change_found is None:
+                    for new_word in new_words:
+                        new_key = word_key(new_word)
+                        if new_key not in old_word_keys:
+                            # This is a new word
+                            change_found = {
+                                'before': None,
+                                'after': {
+                                    'word': new_word.get('word', ''),
+                                    'start': new_word.get('start', ''),
+                                    'end': new_word.get('end', '')
+                                }
+                            }
+                            break
+                
+                # PRIORITY 3: If no modification or addition found, check for deletions
+                if change_found is None:
+                    for old_word in old_words:
+                        old_key = word_key(old_word)
+                        if old_key not in new_word_keys:
+                            # This word was deleted
+                            change_found = {
+                                'before': {
+                                    'word': old_word.get('word', ''),
+                                    'start': old_word.get('start', ''),
+                                    'end': old_word.get('end', '')
+                                },
+                                'after': None
+                            }
+                            break
+            
+            # Compare phrases if transcription type is 'phrases'
+            elif transcription_data.get('transcription_type') == 'phrases':
+                old_phrases = current_transcription_data.get('phrases', [])
+                new_phrases = transcription_data.get('phrases', [])
+                
+                # Create a function to create a unique key for a phrase
+                def phrase_key(phrase):
+                    """Create a unique key for a phrase based on its content."""
+                    return (phrase.get('text', ''), str(phrase.get('start', '')), str(phrase.get('end', '')))
+                
+                # Build sets of phrase keys for efficient lookup
+                old_phrase_keys = {phrase_key(p) for p in old_phrases}
+                new_phrase_keys = {phrase_key(p) for p in new_phrases}
+                
+                # PRIORITY 1: Check for modifications first (phrases at same position that changed)
+                for i in range(min(len(old_phrases), len(new_phrases))):
+                    old_phrase = old_phrases[i]
+                    new_phrase = new_phrases[i]
+                    old_key = phrase_key(old_phrase)
+                    new_key = phrase_key(new_phrase)
+                    
+                    if old_key != new_key:
+                        # Check if this is a true modification (not a move)
+                        old_exists_elsewhere = any(phrase_key(p) == old_key for j, p in enumerate(new_phrases) if j != i)
+                        new_exists_elsewhere = any(phrase_key(p) == new_key for j, p in enumerate(old_phrases) if j != i)
+                        
+                        if not old_exists_elsewhere and not new_exists_elsewhere:
+                            # True modification at this position
+                            change_found = {
+                                'before': {
+                                    'word': old_phrase.get('text', ''),
+                                    'start': old_phrase.get('start', ''),
+                                    'end': old_phrase.get('end', '')
+                                },
+                                'after': {
+                                    'word': new_phrase.get('text', ''),
+                                    'start': new_phrase.get('start', ''),
+                                    'end': new_phrase.get('end', '')
+                                }
+                            }
+                            break
+                
+                # PRIORITY 2: If no modification found, check for additions (phrases in new but not in old)
+                if change_found is None:
+                    for new_phrase in new_phrases:
+                        new_key = phrase_key(new_phrase)
+                        if new_key not in old_phrase_keys:
+                            # This is a new phrase
+                            change_found = {
+                                'before': None,
+                                'after': {
+                                    'word': new_phrase.get('text', ''),
+                                    'start': new_phrase.get('start', ''),
+                                    'end': new_phrase.get('end', '')
+                                }
+                            }
+                            break
+                
+                # PRIORITY 3: If no modification or addition found, check for deletions
+                if change_found is None:
+                    for old_phrase in old_phrases:
+                        old_key = phrase_key(old_phrase)
+                        if old_key not in new_phrase_keys:
+                            # This phrase was deleted
+                            change_found = {
+                                'before': {
+                                    'word': old_phrase.get('text', ''),
+                                    'start': old_phrase.get('start', ''),
+                                    'end': old_phrase.get('end', '')
+                                },
+                                'after': None
+                            }
+                            break
+            
+            # Save version history to separate collection if change found
+            if change_found and self.version_history_collection:
+                version_doc = {
+                    'transcription_id': document_id,
+                    'timestamp': datetime.now(timezone.utc),
+                    'user_id': str(user_id) if user_id else None,
+                    'before': change_found['before'],
+                    'after': change_found['after']
+                }
+                self.version_history_collection.insert_one(version_doc)
+                print(f"✅ Saved version history entry for transcription: {document_id}")
             
             # Prepare update data
             update_data = {
@@ -1148,6 +1327,8 @@ class StorageManager:
                 }
             
             print(f"✅ Updated transcription in MongoDB: {document_id}")
+            if change_found:
+                print(f"   Tracked version history entry")
             
             return {
                 'success': True,
@@ -1159,6 +1340,154 @@ class StorageManager:
             return {
                 'success': False,
                 'error': f"Error updating transcription: {str(e)}"
+            }
+    
+    def get_version_history(self, document_id: str, user_id: Optional[str] = None, is_admin: bool = False) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve version history for a transcription from separate collection.
+        Regular users can only access version history for transcriptions assigned to them.
+        Admins can access version history for all transcriptions.
+        
+        Args:
+            document_id: MongoDB document ID
+            user_id: User ID to check access (if not admin)
+            is_admin: Whether the user is an admin
+            
+        Returns:
+            Dictionary with version history or None if not found or access denied
+        """
+        try:
+            if not self.collection or not self.version_history_collection:
+                return None
+                
+            from bson import ObjectId
+            from bson.errors import InvalidId
+            
+            # Validate ObjectId format
+            try:
+                obj_id = ObjectId(document_id)
+            except (InvalidId, ValueError) as e:
+                print(f"❌ Invalid transcription ID format: {document_id}")
+                return None
+            
+            # Get document by ID to check access
+            document = self.collection.find_one({'_id': obj_id})
+            
+            if not document:
+                return None
+            
+            # Check access: admins can see all, regular users only assigned ones
+            if not is_admin and user_id:
+                assigned_user_id = document.get('assigned_user_id')
+                if assigned_user_id is None or str(assigned_user_id) != str(user_id):
+                    print(f"🚫 Access denied: user {user_id} trying to access version history for transcription assigned to {assigned_user_id}")
+                    return None
+            
+            # Get version history from separate collection, sorted by timestamp descending (newest first)
+            version_history_cursor = self.version_history_collection.find(
+                {'transcription_id': document_id}
+            ).sort('timestamp', -1)
+            
+            # Convert to list and format
+            formatted_history = []
+            for entry in version_history_cursor:
+                formatted_entry = {
+                    'timestamp': entry['timestamp'].isoformat() if isinstance(entry.get('timestamp'), datetime) else entry.get('timestamp'),
+                    'user_id': entry.get('user_id'),
+                    'before': entry.get('before'),
+                    'after': entry.get('after')
+                }
+                formatted_history.append(formatted_entry)
+            
+            return {
+                'transcription_id': document_id,
+                'version_history': formatted_history,
+                'total_versions': len(formatted_history)
+            }
+            
+        except Exception as e:
+            print(f"❌ Error retrieving version history: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return None
+    
+    def clear_version_history(self, document_id: str, user_id: Optional[str] = None, is_admin: bool = False) -> Dict[str, Any]:
+        """
+        Clear version history for a transcription.
+        Regular users can only clear version history for transcriptions assigned to them.
+        Admins can clear version history for all transcriptions.
+        
+        Args:
+            document_id: MongoDB document ID
+            user_id: User ID to check access (if not admin)
+            is_admin: Whether the user is an admin
+            
+        Returns:
+            Dictionary with operation result
+        """
+        try:
+            if not self.collection:
+                return {
+                    'success': False,
+                    'error': 'MongoDB not initialized'
+                }
+            
+            from bson import ObjectId
+            from bson.errors import InvalidId
+            
+            # Validate ObjectId format
+            try:
+                obj_id = ObjectId(document_id)
+            except (InvalidId, ValueError) as e:
+                return {
+                    'success': False,
+                    'error': f'Invalid transcription ID format: {str(e)}'
+                }
+            
+            # Get document to check access
+            document = self.collection.find_one({'_id': obj_id})
+            
+            if not document:
+                return {
+                    'success': False,
+                    'error': 'Transcription not found'
+                }
+            
+            # Check access: admins can clear all, regular users only assigned ones
+            if not is_admin and user_id:
+                assigned_user_id = document.get('assigned_user_id')
+                if assigned_user_id is None or str(assigned_user_id) != str(user_id):
+                    return {
+                        'success': False,
+                        'error': 'Access denied: You can only clear version history for transcriptions assigned to you'
+                    }
+            
+            # Delete all version history entries from separate collection
+            if not self.version_history_collection:
+                return {
+                    'success': False,
+                    'error': 'Version history collection not initialized'
+                }
+            
+            delete_result = self.version_history_collection.delete_many(
+                {'transcription_id': document_id}
+            )
+            
+            print(f"✅ Cleared {delete_result.deleted_count} version history entries for transcription: {document_id}")
+            
+            return {
+                'success': True,
+                'document_id': document_id,
+                'message': 'Version history cleared successfully'
+            }
+            
+        except Exception as e:
+            print(f"❌ Error clearing version history: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return {
+                'success': False,
+                'error': f"Error clearing version history: {str(e)}"
             }
     
     def delete_transcription(self, document_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
