@@ -45,6 +45,7 @@ interface Transcription {
   _id: string;
   filename: string;
   created_at: string;
+  updated_at?: string;
   language: string;
   assigned_user_id?: string;
   user_id?: string;
@@ -80,6 +81,7 @@ function AdminPanel() {
   const [flagging, setFlagging] = useState<string | null>(null);
   const [showFlagDropdown, setShowFlagDropdown] = useState<string | null>(null);
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
+  const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
 
   const { isAdmin } = getUserInfo();
 
@@ -389,6 +391,31 @@ function AdminPanel() {
       setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to delete transcription' });
     } finally {
       setDeleting(null);
+    }
+  };
+
+  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged') => {
+    setUpdatingStatus(transcriptionId);
+    try {
+      const config = getAxiosConfig();
+
+      const response = await axios.put(
+        `${API_BASE_URL}/api/admin/transcriptions/${transcriptionId}/status`,
+        { status: newStatus },
+        config
+      );
+
+      if (response.data.success) {
+        setMessage({ type: 'success', text: 'Status updated successfully' });
+        loadData(); // Reload data
+      } else {
+        setMessage({ type: 'error', text: response.data.error || 'Failed to update status' });
+      }
+    } catch (error: any) {
+      console.error('Error updating status:', error);
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to update status' });
+    } finally {
+      setUpdatingStatus(null);
     }
   };
 
@@ -901,6 +928,9 @@ function AdminPanel() {
                       Created
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      Updated at
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
                       Status
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
@@ -917,7 +947,7 @@ function AdminPanel() {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {paginatedTranscriptions.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={10} className="px-4 py-8 text-center text-gray-500">
                         {searchTerm ? 'No transcriptions match your search' : 'No transcriptions found'}
                       </td>
                     </tr>
@@ -953,17 +983,31 @@ function AdminPanel() {
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                           {new Date(transcription.created_at).toLocaleDateString()}
                         </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {transcription.updated_at 
+                            ? new Date(transcription.updated_at).toLocaleDateString()
+                            : '—'}
+                        </td>
                         <td className="px-4 py-3 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${transcription.status === 'done'
+                          <select
+                            value={transcription.status || 'pending'}
+                            onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged')}
+                            disabled={updatingStatus === transcription._id}
+                            className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
+                              transcription.status === 'done'
                                 ? 'bg-green-100 text-green-800'
                                 : transcription.status === 'flagged'
                                   ? 'bg-red-100 text-red-800'
                                   : 'bg-yellow-100 text-yellow-800'
-                              }`}
+                            } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
                           >
-                            {transcription.status === 'done' ? 'Done' : transcription.status === 'flagged' ? 'Flagged' : 'Pending'}
-                          </span>
+                            <option value="pending">Pending</option>
+                            <option value="done">Done</option>
+                            <option value="flagged">Flagged</option>
+                          </select>
+                          {updatingStatus === transcription._id && (
+                            <Loader2 className="inline-block h-3 w-3 ml-2 animate-spin text-gray-500" />
+                          )}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                           {transcription.transcription_type === 'words' && transcription.edited_words_count !== undefined
@@ -1180,4 +1224,3 @@ function AdminPanel() {
 }
 
 export default AdminPanel;
-

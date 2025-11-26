@@ -126,9 +126,9 @@ export FLASK_PORT=${FLASK_PORT:-5002}\n\
 if [ -z "$GOOGLE_APPLICATION_CREDENTIALS" ] && [ -f /app/gcp-credentials_bkp.json ]; then\n\
     export GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials_bkp.json\n\
 fi\n\
-# Activate virtual environment and run Flask\n\
+# Activate virtual environment and run Flask with gunicorn\n\
 source /app/venv/bin/activate\n\
-cd /app && python /app/backend/backend_api.py\n' > /start-flask.sh && chmod +x /start-flask.sh
+cd /app && gunicorn -w 4 -b 0.0.0.0:${FLASK_PORT:-5002} backend.backend_api:app\n' > /start-flask.sh && chmod +x /start-flask.sh
 
 # Create supervisord configuration
 RUN printf '[supervisord]\n\
