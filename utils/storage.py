@@ -884,20 +884,21 @@ class StorageManager:
                 
                 # Determine status:
                 # Priority order:
-                # 1. manual_status (if set by admin - highest priority)
-                # 2. "flagged" if is_flagged is True
+                # 1. "flagged" if is_flagged is True (highest priority - flagged files stay flagged)
+                # 2. manual_status (if set by admin or when saving changes)
                 # 3. "done" only if file is assigned AND the assigned user has saved changes (user_id matches assigned_user_id)
                 # 4. "pending" if not assigned, or assigned but assigned user hasn't saved changes yet
                 is_flagged = doc.get('is_flagged', False)
                 assigned_user_id = doc.get('assigned_user_id')
                 doc_user_id = doc.get('user_id')
-                manual_status = doc.get('manual_status')  # Admin-set status override
+                manual_status = doc.get('manual_status')  # Admin-set status override or set when saving changes
                 
-                # Use manual_status if set by admin (highest priority)
-                if manual_status and manual_status in ['done', 'pending', 'flagged']:
-                    computed_status = manual_status
-                elif is_flagged:
+                # Flagged status has highest priority - flagged files stay flagged
+                if is_flagged:
                     computed_status = 'flagged'
+                # Use manual_status if set (by admin or when saving changes)
+                elif manual_status and manual_status in ['done', 'pending', 'flagged']:
+                    computed_status = manual_status
                 # Status is "done" only if assigned AND the user_id matches assigned_user_id (meaning assigned user saved)
                 elif assigned_user_id and doc_user_id and str(assigned_user_id) == str(doc_user_id):
                     computed_status = 'done'  # Assigned and assigned user has saved changes
@@ -1108,6 +1109,14 @@ class StorageManager:
             
             from bson import ObjectId
             
+            # Get the current document to check if it exists
+            current_doc = self.collection.find_one({'_id': ObjectId(document_id)})
+            if not current_doc:
+                return {
+                    'success': False,
+                    'error': 'Transcription not found'
+                }
+            
             # Prepare update data
             update_data = {
                 'transcription_data': transcription_data,
@@ -1117,6 +1126,12 @@ class StorageManager:
             # If user_id is provided, update it to mark who saved the changes
             if user_id:
                 update_data['user_id'] = str(user_id)  # Ensure it's a string
+            
+            # Set status to "done" when saving changes
+            # Note: If file is flagged, the status computation will still show "flagged" 
+            # because flagged status has higher priority than manual_status
+            # But we set manual_status to "done" so that when unflagged, it will be "done"
+            update_data['manual_status'] = 'done'
             
             # Update document by ID only (no user_id filtering)
             update_result = self.collection.update_one(
