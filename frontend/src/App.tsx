@@ -1217,6 +1217,69 @@ function App() {
         )}
 
         <div className="max-w-7xl mx-auto mb-4">
+          {/* Insight Cards */}
+          {!transcriptionData && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+              {/* Total Audio Files Card */}
+              <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 mb-1">Total Audio Files</p>
+                    <p className="text-3xl font-bold text-gray-800">{allSavedTranscriptions.length}</p>
+                  </div>
+                  <div className="bg-blue-100 rounded-full p-3">
+                    <Database className="h-8 w-8 text-blue-600" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Total Files Annotated Card */}
+              <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-green-500">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 mb-1">Files Annotated</p>
+                    <p className="text-3xl font-bold text-gray-800">
+                      {allSavedTranscriptions.filter(t => t.status === 'done').length}
+                    </p>
+                  </div>
+                  <div className="bg-green-100 rounded-full p-3">
+                    <Check className="h-8 w-8 text-green-600" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Pending Files Card */}
+              <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-yellow-500">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 mb-1">Pending Files</p>
+                    <p className="text-3xl font-bold text-gray-800">
+                      {allSavedTranscriptions.filter(t => t.status === 'pending' || !t.status).length}
+                    </p>
+                  </div>
+                  <div className="bg-yellow-100 rounded-full p-3">
+                    <Loader2 className="h-8 w-8 text-yellow-600" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Flagged Files Card */}
+              <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-red-500">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 mb-1">Flagged Files</p>
+                    <p className="text-3xl font-bold text-gray-800">
+                      {allSavedTranscriptions.filter(t => t.is_flagged === true).length}
+                    </p>
+                  </div>
+                  <div className="bg-red-100 rounded-full p-3">
+                    <Flag className="h-8 w-8 text-red-600" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <h2 className="text-2xl font-bold text-gray-800 mb-4">Saved Data</h2>
 
           {/* Saved Transcriptions Table Section */}

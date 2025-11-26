@@ -72,6 +72,9 @@ function AdminPanel() {
   const [bulkAssigning, setBulkAssigning] = useState(false);
   const [languageFilter, setLanguageFilter] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [assignedUserFilter, setAssignedUserFilter] = useState<string>('');
+  const [flaggedFilter, setFlaggedFilter] = useState<string>('');
   const [downloading, setDownloading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [flagging, setFlagging] = useState<string | null>(null);
@@ -91,13 +94,13 @@ function AdminPanel() {
   // Reset to page 1 when search term or filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, languageFilter, dateFilter]);
+  }, [searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, flaggedFilter]);
 
   const loadData = async () => {
     setLoading(true);
     try {
       const config = getAxiosConfig();
-      
+
       // Load users
       const usersResponse = await axios.get(`${API_BASE_URL}/api/admin/users`, config);
       if (usersResponse.data.success) {
@@ -168,14 +171,14 @@ function AdminPanel() {
     const selectedIds = Array.from(selectedTranscriptions);
     console.log(`🔄 Bulk assigning ${selectedIds.length} transcriptions to user ${bulkAssignUserId}`);
     console.log('Selected IDs:', selectedIds);
-    
+
     let successCount = 0;
     let errorCount = 0;
     const errors: string[] = [];
 
     try {
       const config = getAxiosConfig();
-      
+
       // Assign all selected transcriptions in parallel
       const assignments = selectedIds.map((id, index) =>
         axios.post(
@@ -183,31 +186,31 @@ function AdminPanel() {
           { assigned_user_id: bulkAssignUserId },
           config
         )
-        .then(response => {
-          // Verify the response indicates success
-          if (response.data && response.data.success) {
-            console.log(`✅ Assigned transcription ${index + 1}/${selectedIds.length}: ${id} to user ${bulkAssignUserId}`);
-            console.log(`   Response:`, response.data);
-            return { success: true, id, response };
-          } else {
-            const errorMsg = response.data?.error || 'Assignment failed - no success flag';
-            console.error(`❌ Assignment failed for ${id}:`, errorMsg);
+          .then(response => {
+            // Verify the response indicates success
+            if (response.data && response.data.success) {
+              console.log(`✅ Assigned transcription ${index + 1}/${selectedIds.length}: ${id} to user ${bulkAssignUserId}`);
+              console.log(`   Response:`, response.data);
+              return { success: true, id, response };
+            } else {
+              const errorMsg = response.data?.error || 'Assignment failed - no success flag';
+              console.error(`❌ Assignment failed for ${id}:`, errorMsg);
+              errorCount++;
+              errors.push(`ID ${id}: ${errorMsg}`);
+              return { success: false, id, error: errorMsg };
+            }
+          })
+          .catch(error => {
             errorCount++;
+            const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
             errors.push(`ID ${id}: ${errorMsg}`);
+            console.error(`❌ Failed to assign transcription ${id}:`, errorMsg);
+            if (error.response) {
+              console.error(`   Response status: ${error.response.status}`);
+              console.error(`   Response data:`, error.response.data);
+            }
             return { success: false, id, error: errorMsg };
-          }
-        })
-        .catch(error => {
-          errorCount++;
-          const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
-          errors.push(`ID ${id}: ${errorMsg}`);
-          console.error(`❌ Failed to assign transcription ${id}:`, errorMsg);
-          if (error.response) {
-            console.error(`   Response status: ${error.response.status}`);
-            console.error(`   Response data:`, error.response.data);
-          }
-          return { success: false, id, error: errorMsg };
-        })
+          })
       );
 
       const results = await Promise.all(assignments);
@@ -216,9 +219,9 @@ function AdminPanel() {
       console.log(`📊 Assignment results: ${successCount} succeeded, ${errorCount} failed`);
 
       if (successCount > 0) {
-        setMessage({ 
-          type: 'success', 
-          text: `Successfully assigned ${successCount} transcription${successCount > 1 ? 's' : ''}${errorCount > 0 ? `. ${errorCount} failed.` : ''}` 
+        setMessage({
+          type: 'success',
+          text: `Successfully assigned ${successCount} transcription${successCount > 1 ? 's' : ''}${errorCount > 0 ? `. ${errorCount} failed.` : ''}`
         });
         setSelectedTranscriptions(new Set()); // Clear selection
         setBulkAssignUserId(''); // Reset dropdown
@@ -245,14 +248,14 @@ function AdminPanel() {
     const selectedIds = Array.from(selectedTranscriptions);
     console.log(`🔄 Bulk unassigning ${selectedIds.length} transcriptions`);
     console.log('Selected IDs:', selectedIds);
-    
+
     let successCount = 0;
     let errorCount = 0;
     const errors: string[] = [];
 
     try {
       const config = getAxiosConfig();
-      
+
       // Unassign all selected transcriptions in parallel
       const unassignments = selectedIds.map((id, index) =>
         axios.post(
@@ -260,26 +263,26 @@ function AdminPanel() {
           {},
           config
         )
-        .then(response => {
-          // Verify the response indicates success
-          if (response.data && response.data.success) {
-            console.log(`✅ Unassigned transcription ${index + 1}/${selectedIds.length}: ${id}`);
-            return { success: true, id, response };
-          } else {
-            const errorMsg = response.data?.error || 'Unassignment failed - no success flag';
-            console.error(`❌ Unassignment failed for ${id}:`, errorMsg);
+          .then(response => {
+            // Verify the response indicates success
+            if (response.data && response.data.success) {
+              console.log(`✅ Unassigned transcription ${index + 1}/${selectedIds.length}: ${id}`);
+              return { success: true, id, response };
+            } else {
+              const errorMsg = response.data?.error || 'Unassignment failed - no success flag';
+              console.error(`❌ Unassignment failed for ${id}:`, errorMsg);
+              errorCount++;
+              errors.push(`ID ${id}: ${errorMsg}`);
+              return { success: false, id, error: errorMsg };
+            }
+          })
+          .catch(error => {
             errorCount++;
+            const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
             errors.push(`ID ${id}: ${errorMsg}`);
+            console.error(`❌ Failed to unassign transcription ${id}:`, errorMsg);
             return { success: false, id, error: errorMsg };
-          }
-        })
-        .catch(error => {
-          errorCount++;
-          const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
-          errors.push(`ID ${id}: ${errorMsg}`);
-          console.error(`❌ Failed to unassign transcription ${id}:`, errorMsg);
-          return { success: false, id, error: errorMsg };
-        })
+          })
       );
 
       const results = await Promise.all(unassignments);
@@ -288,9 +291,9 @@ function AdminPanel() {
       console.log(`📊 Unassignment results: ${successCount} succeeded, ${errorCount} failed`);
 
       if (successCount > 0) {
-        setMessage({ 
-          type: 'success', 
-          text: `Successfully unassigned ${successCount} transcription${successCount > 1 ? 's' : ''}${errorCount > 0 ? `. ${errorCount} failed.` : ''}` 
+        setMessage({
+          type: 'success',
+          text: `Successfully unassigned ${successCount} transcription${successCount > 1 ? 's' : ''}${errorCount > 0 ? `. ${errorCount} failed.` : ''}`
         });
         setSelectedTranscriptions(new Set()); // Clear selection
         loadData(); // Reload data
@@ -310,7 +313,7 @@ function AdminPanel() {
     setDownloading(true);
     try {
       const config = getAxiosConfig();
-      
+
       // Make request to download endpoint with responseType: 'blob' for binary data
       const response = await axios.get(
         `${API_BASE_URL}/api/admin/transcriptions/download-done`,
@@ -325,7 +328,7 @@ function AdminPanel() {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      
+
       // Get filename from Content-Disposition header or use default
       const contentDisposition = response.headers['content-disposition'];
       let filename = 'done_transcriptions.zip';
@@ -335,15 +338,15 @@ function AdminPanel() {
           filename = filenameMatch[1];
         }
       }
-      
+
       link.download = filename;
       document.body.appendChild(link);
       link.click();
-      
+
       // Cleanup
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
-      
+
       setMessage({ type: 'success', text: 'Download completed successfully' });
     } catch (error: any) {
       console.error('❌ Error downloading transcriptions:', error);
@@ -362,7 +365,7 @@ function AdminPanel() {
       '• Audio file from S3 storage\n\n' +
       'This action is irreversible.'
     );
-    
+
     if (!confirmed) {
       return;
     }
@@ -395,10 +398,10 @@ function AdminPanel() {
     try {
       const config = getAxiosConfig();
       const newFlaggedState = !currentFlagged;
-      
+
       const response = await axios.post(
         `${API_BASE_URL}/api/transcriptions/${transcriptionId}/flag`,
-        { 
+        {
           is_flagged: newFlaggedState,
           flag_reason: newFlaggedState ? reason : null
         },
@@ -430,12 +433,12 @@ function AdminPanel() {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
-    
+
     const parts: string[] = [];
     if (hours > 0) parts.push(`${hours} hour${hours !== 1 ? 's' : ''}`);
     if (minutes > 0) parts.push(`${minutes} minute${minutes !== 1 ? 's' : ''}`);
     if (secs > 0 && hours === 0) parts.push(`${secs} second${secs !== 1 ? 's' : ''}`);
-    
+
     return parts.length > 0 ? parts.join(', ') : '0 hours';
   };
 
@@ -447,17 +450,14 @@ function AdminPanel() {
   // Get unique languages for filter dropdown
   const uniqueLanguages = Array.from(new Set(transcriptions.map(t => t.language).filter(Boolean))).sort();
 
-  // Filter transcriptions based on search term, language, and date
+  // Filter transcriptions based on search term, language, date, status, assigned user, and flagged status
   const filteredTranscriptions = transcriptions.filter(t => {
     // Search term filter
     const searchLower = searchTerm.toLowerCase();
     const matchesSearch = !searchTerm || (
       t.filename.toLowerCase().includes(searchLower) ||
       getUserName(t.assigned_user_id).toLowerCase().includes(searchLower) ||
-      (t.status && t.status.toLowerCase().includes(searchLower)) ||
-      (searchLower === 'done' && t.status === 'done') ||
-      (searchLower === 'pending' && t.status === 'pending') ||
-      (searchLower === 'flagged' && t.status === 'flagged')
+      (t.status && t.status.toLowerCase().includes(searchLower))
     );
 
     // Language filter
@@ -469,13 +469,34 @@ function AdminPanel() {
       const transcriptionDate = new Date(t.created_at);
       const filterDate = new Date(dateFilter);
       // Compare dates (ignore time)
-      matchesDate = 
+      matchesDate =
         transcriptionDate.getFullYear() === filterDate.getFullYear() &&
         transcriptionDate.getMonth() === filterDate.getMonth() &&
         transcriptionDate.getDate() === filterDate.getDate();
     }
 
-    return matchesSearch && matchesLanguage && matchesDate;
+    // Status filter
+    const matchesStatus = !statusFilter || t.status === statusFilter || (!t.status && statusFilter === 'pending');
+
+    // Assigned user filter
+    let matchesAssignedUser = true;
+    if (assignedUserFilter) {
+      if (assignedUserFilter === 'unassigned') {
+        matchesAssignedUser = !t.assigned_user_id;
+      } else {
+        matchesAssignedUser = t.assigned_user_id === assignedUserFilter;
+      }
+    }
+
+    // Flagged filter
+    let matchesFlagged = true;
+    if (flaggedFilter === 'flagged') {
+      matchesFlagged = t.is_flagged === true;
+    } else if (flaggedFilter === 'not-flagged') {
+      matchesFlagged = !t.is_flagged;
+    }
+
+    return matchesSearch && matchesLanguage && matchesDate && matchesStatus && matchesAssignedUser && matchesFlagged;
   });
 
   // Calculate pagination
@@ -514,11 +535,11 @@ function AdminPanel() {
   };
 
   // Check if all current page items are selected
-  const allCurrentPageSelected = paginatedTranscriptions.length > 0 && 
+  const allCurrentPageSelected = paginatedTranscriptions.length > 0 &&
     paginatedTranscriptions.every(t => selectedTranscriptions.has(t._id));
-  
+
   // Check if some (but not all) current page items are selected
-  const someCurrentPageSelected = paginatedTranscriptions.some(t => selectedTranscriptions.has(t._id)) && 
+  const someCurrentPageSelected = paginatedTranscriptions.some(t => selectedTranscriptions.has(t._id)) &&
     !allCurrentPageSelected;
 
   if (!isAdmin) {
@@ -554,31 +575,40 @@ function AdminPanel() {
                 <p className="text-gray-600 mt-2">Manage transcription assignments</p>
               </div>
             </div>
-            <button
-              onClick={handleDownloadDoneTranscriptions}
-              disabled={downloading}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title="Download all done transcriptions as ZIP"
-            >
-              {downloading ? (
-                <>
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                  <span className="hidden sm:inline">Downloading...</span>
-                </>
-              ) : (
-                <>
-                  <Download className="h-5 w-5" />
-                  <span className="hidden sm:inline">Download Done Files</span>
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => navigate('/admin/teams')}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                title="View team management"
+              >
+                <Users className="h-5 w-5" />
+                <span className="hidden sm:inline">Team Management</span>
+              </button>
+              <button
+                onClick={handleDownloadDoneTranscriptions}
+                disabled={downloading}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Download all done transcriptions as ZIP"
+              >
+                {downloading ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <span className="hidden sm:inline">Downloading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-5 w-5" />
+                    <span className="hidden sm:inline">Download Done Files</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {message && (
             <div
-              className={`mb-4 p-4 rounded-lg ${
-                message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
-              }`}
+              className={`mb-4 p-4 rounded-lg ${message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
+                }`}
             >
               {message.text}
               <button
@@ -599,54 +629,165 @@ function AdminPanel() {
             </div>
           </div>
 
+          {/* Insight Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            {/* Total Audio Files Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Total Audio Files</p>
+                  <p className="text-3xl font-bold text-gray-800">{transcriptions.length}</p>
+                </div>
+                <div className="bg-blue-100 rounded-full p-3">
+                  <FileText className="h-8 w-8 text-blue-600" />
+                </div>
+              </div>
+            </div>
+
+            {/* Total Files Annotated Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-green-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Files Annotated</p>
+                  <p className="text-3xl font-bold text-gray-800">
+                    {transcriptions.filter(t => t.status === 'done').length}
+                  </p>
+                </div>
+                <div className="bg-green-100 rounded-full p-3">
+                  <CheckSquare className="h-8 w-8 text-green-600" />
+                </div>
+              </div>
+            </div>
+
+            {/* Pending Files Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-yellow-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Pending Files</p>
+                  <p className="text-3xl font-bold text-gray-800">
+                    {transcriptions.filter(t => t.status === 'pending' || !t.status).length}
+                  </p>
+                </div>
+                <div className="bg-yellow-100 rounded-full p-3">
+                  <Loader2 className="h-8 w-8 text-yellow-600" />
+                </div>
+              </div>
+            </div>
+
+            {/* Flagged Files Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-red-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Flagged Files</p>
+                  <p className="text-3xl font-bold text-gray-800">
+                    {transcriptions.filter(t => t.is_flagged === true).length}
+                  </p>
+                </div>
+                <div className="bg-red-100 rounded-full p-3">
+                  <Flag className="h-8 w-8 text-red-600" />
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div className="mb-6 space-y-4">
             {/* Search and Filter Controls */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
-                <input
-                  type="text"
-                  placeholder="Search by filename or user..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
+            <div className="bg-transparent border-none">
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 mb-3">Filters</h3>
               </div>
-              <select
-                value={languageFilter}
-                onChange={(e) => setLanguageFilter(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="">All Languages</option>
-                {uniqueLanguages.map((lang) => (
-                  <option key={lang} value={lang}>
-                    {lang}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="date"
-                value={dateFilter}
-                onChange={(e) => setDateFilter(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Filter by date"
-              />
-            </div>
-            {/* Clear Filters Button */}
-            {(languageFilter || dateFilter) && (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    setLanguageFilter('');
-                    setDateFilter('');
-                  }}
-                  className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+
+              {/* First Row: Search and Basic Filters */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+                  <input
+                    type="text"
+                    placeholder="Search by filename or user..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
                 >
-                  <X className="h-4 w-4" />
-                  Clear Filters
-                </button>
+                  <option value="">All Status</option>
+                  <option value="done">Done</option>
+                  <option value="pending">Pending</option>
+                  <option value="flagged">Flagged</option>
+                </select>
+                <select
+                  value={languageFilter}
+                  onChange={(e) => setLanguageFilter(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                >
+                  <option value="">All Languages</option>
+                  {uniqueLanguages.map((lang) => (
+                    <option key={lang} value={lang}>
+                      {lang}
+                    </option>
+                  ))}
+                </select>
               </div>
-            )}
+
+              {/* Second Row: User and Flag Filters */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+                <select
+                  value={assignedUserFilter}
+                  onChange={(e) => setAssignedUserFilter(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                >
+                  <option value="">All Users</option>
+                  <option value="unassigned">Unassigned</option>
+                  {users.map((user) => (
+                    <option key={user._id} value={user._id}>
+                      {user.name || user.username}
+                    </option>
+                  ))}
+                </select>
+                {/* <select
+                  value={flaggedFilter}
+                  onChange={(e) => setFlaggedFilter(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                >
+                  <option value="">All Files</option>
+                  <option value="flagged">Flagged Only</option>
+                  <option value="not-flagged">Not Flagged</option>
+                </select> */}
+                <input
+                  type="date"
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                  placeholder="Filter by date"
+                />
+                {/* Clear Filters Button */}
+                {(searchTerm || languageFilter || dateFilter || statusFilter || assignedUserFilter) && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setSearchTerm('');
+                        setLanguageFilter('');
+                        setDateFilter('');
+                        setStatusFilter('');
+                        setAssignedUserFilter('');
+                        setFlaggedFilter('');
+                      }}
+                      className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      <X className="h-4 w-4" />
+                      Clear All Filters
+                    </button>
+                    <span className="text-xs text-gray-500">
+                      {filteredTranscriptions.length} of {transcriptions.length} files shown
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Bulk Assignment Controls */}
             {selectedTranscriptions.size > 0 && (
@@ -814,13 +955,12 @@ function AdminPanel() {
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              transcription.status === 'done'
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${transcription.status === 'done'
                                 ? 'bg-green-100 text-green-800'
                                 : transcription.status === 'flagged'
-                                ? 'bg-red-100 text-red-800'
-                                : 'bg-yellow-100 text-yellow-800'
-                            }`}
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-yellow-100 text-yellow-800'
+                              }`}
                           >
                             {transcription.status === 'done' ? 'Done' : transcription.status === 'flagged' ? 'Flagged' : 'Pending'}
                           </span>
@@ -829,16 +969,15 @@ function AdminPanel() {
                           {transcription.transcription_type === 'words' && transcription.edited_words_count !== undefined
                             ? `${transcription.edited_words_count} / ${transcription.total_words || 0}`
                             : transcription.transcription_type === 'phrases'
-                            ? 'N/A'
-                            : '—'}
+                              ? 'N/A'
+                              : '—'}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span
-                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              transcription.assigned_user_id
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${transcription.assigned_user_id
                                 ? 'bg-green-100 text-green-800'
                                 : 'bg-gray-100 text-gray-800'
-                            }`}
+                              }`}
                           >
                             {getUserName(transcription.assigned_user_id)}
                           </span>
@@ -883,7 +1022,7 @@ function AdminPanel() {
                                 )}
                               </button>
                             )}
-                            
+
                             <div className="relative">
                               <button
                                 onClick={(e) => {
@@ -904,11 +1043,10 @@ function AdminPanel() {
                                   }
                                 }}
                                 disabled={flagging === transcription._id}
-                                className={`p-1 rounded-lg transition-colors flex items-center justify-center ${
-                                  transcription.is_flagged
+                                className={`p-1 rounded-lg transition-colors flex items-center justify-center ${transcription.is_flagged
                                     ? 'text-red-600 hover:text-red-800 hover:bg-red-50'
                                     : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-                                }`}
+                                  }`}
                                 title={transcription.is_flagged ? "Unflag transcription" : "Flag transcription"}
                               >
                                 {flagging === transcription._id ? (
@@ -956,7 +1094,7 @@ function AdminPanel() {
                   <ChevronLeft className="h-4 w-4" />
                   Previous
                 </button>
-                
+
                 <div className="flex items-center gap-1">
                   {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
                     let page: number;
@@ -972,16 +1110,15 @@ function AdminPanel() {
                         page = currentPage - 3 + i;
                       }
                     }
-                    
+
                     return (
                       <button
                         key={page}
                         onClick={() => setCurrentPage(page)}
-                        className={`px-3 py-2 text-sm font-medium rounded-lg ${
-                          currentPage === page
+                        className={`px-3 py-2 text-sm font-medium rounded-lg ${currentPage === page
                             ? 'bg-blue-600 text-white'
                             : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50'
-                        }`}
+                          }`}
                       >
                         {page}
                       </button>

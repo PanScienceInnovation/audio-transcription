@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-
 import SignIn from './SignIn';
 import MainApp from './MainApp';
 import AdminPanel from './AdminPanel';
+import Teams from './Teams';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
@@ -108,6 +109,14 @@ function AppWithAuth() {
         element={
           <ProtectedRoute>
             <MainApp onSignOut={handleSignOut} />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/teams"
+        element={
+          <ProtectedRoute>
+            <Teams />
           </ProtectedRoute>
         }
       />
