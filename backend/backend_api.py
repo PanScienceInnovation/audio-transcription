@@ -1832,6 +1832,160 @@ def list_users():
         }), 500
 
 
+@app.route('/api/admin/team-stats', methods=['GET'])
+def get_team_stats():
+    """
+    Get team statistics with filtering (admin only).
+    Returns user statistics with transcription counts filtered by query parameters.
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    Query Parameters:
+        - search: Search term for user name, username, or email (case-insensitive)
+        - status: Filter transcriptions by status ('done', 'pending', 'flagged')
+        - language: Filter transcriptions by language
+        - date: Filter transcriptions by date (YYYY-MM-DD format)
+        - transcription_type: Filter by transcription type ('words' or 'phrases')
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        if not users_collection:
+            return jsonify({
+                'success': False,
+                'error': 'User service unavailable'
+            }), 500
+        
+        # Get filter parameters
+        search = request.args.get('search', '').strip() or None
+        status = request.args.get('status', '').strip() or None
+        language = request.args.get('language', '').strip() or None
+        date = request.args.get('date', '').strip() or None
+        transcription_type = request.args.get('transcription_type', '').strip() or None
+        
+        # Get all non-admin users
+        all_users = []
+        for user in users_collection.find({}, {'password_hash': 0}):  # Exclude password
+            if user.get('is_admin', False):
+                continue  # Skip admins
+            
+            user['_id'] = str(user['_id'])
+            if 'created_at' in user and isinstance(user['created_at'], datetime):
+                user['created_at'] = user['created_at'].isoformat()
+            if 'updated_at' in user and isinstance(user['updated_at'], datetime):
+                user['updated_at'] = user['updated_at'].isoformat()
+            if 'last_login' in user and isinstance(user['last_login'], datetime):
+                user['last_login'] = user['last_login'].isoformat()
+            all_users.append(user)
+        
+        # Build transcription query filters (same as list_transcriptions)
+        transcription_filters = {}
+        if language:
+            transcription_filters['language'] = language
+        if date:
+            transcription_filters['date'] = date
+        if status:
+            transcription_filters['status'] = status
+        if transcription_type:
+            transcription_filters['transcription_type'] = transcription_type
+        
+        # Get all transcriptions with filters (admin sees all)
+        transcriptions_result = storage_manager.list_transcriptions(
+            limit=10000,  # Get all transcriptions (we'll filter by user)
+            skip=0,
+            user_id=None,
+            is_admin=True,
+            search=None,  # Don't filter by filename search here
+            language=language,
+            date=date,
+            status=status,
+            assigned_user=None,
+            flagged=None,
+            transcription_type=transcription_type
+        )
+        
+        if not transcriptions_result.get('success'):
+            return jsonify({
+                'success': False,
+                'error': transcriptions_result.get('error', 'Failed to fetch transcriptions')
+            }), 500
+        
+        transcriptions = transcriptions_result.get('transcriptions', [])
+        
+        # Calculate statistics for each user
+        user_stats = []
+        for user in all_users:
+            user_id = user['_id']
+            
+            # Filter transcriptions assigned to this user
+            user_transcriptions = [
+                t for t in transcriptions 
+                if t.get('assigned_user_id') == user_id
+            ]
+            
+            # Calculate statistics
+            assigned_files = len(user_transcriptions)
+            annotated_files = len([t for t in user_transcriptions if t.get('status') == 'done'])
+            flagged_files = len([t for t in user_transcriptions if t.get('is_flagged') == True])
+            pending_files = len([t for t in user_transcriptions if t.get('status') == 'pending' or not t.get('status')])
+            
+            user_stats.append({
+                'user': user,
+                'assignedFiles': assigned_files,
+                'annotatedFiles': annotated_files,
+                'flaggedFiles': flagged_files,
+                'pendingFiles': pending_files
+            })
+        
+        # Apply search filter to users (if provided)
+        if search:
+            search_lower = search.lower()
+            user_stats = [
+                stat for stat in user_stats
+                if (
+                    search_lower in stat['user'].get('name', '').lower() or
+                    search_lower in stat['user'].get('username', '').lower() or
+                    search_lower in stat['user'].get('email', '').lower()
+                )
+            ]
+        
+        # Calculate totals
+        total_team_members = len(user_stats)
+        total_assigned_files = sum(stat['assignedFiles'] for stat in user_stats)
+        total_annotated_files = sum(stat['annotatedFiles'] for stat in user_stats)
+        total_flagged_files = sum(stat['flaggedFiles'] for stat in user_stats)
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'userStats': user_stats,
+                'summary': {
+                    'totalTeamMembers': total_team_members,
+                    'totalAssignedFiles': total_assigned_files,
+                    'totalAnnotatedFiles': total_annotated_files,
+                    'totalFlaggedFiles': total_flagged_files
+                }
+            }
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error getting team stats: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/transcriptions/download-done', methods=['GET'])
 def download_done_transcriptions():
     """

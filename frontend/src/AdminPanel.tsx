@@ -576,9 +576,9 @@ function AdminPanel() {
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-4">
               <button
-                onClick={() => navigate(-1)}
+                onClick={() => navigate('/word-level')}
                 className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-                title="Go back"
+                title="Go back to Word-Level Transcription"
               >
                 <ArrowLeft className="h-5 w-5" />
                 <span className="hidden sm:inline">Back</span>
