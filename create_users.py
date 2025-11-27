@@ -95,6 +95,41 @@ USERS = [
         'is_admin': False
     },
     {
+        'username': 'user11',
+        'password': 'password11',
+        'email': 'user11@phonex.ai',
+        'name': 'User Eleven',
+        'is_admin': False
+    },
+    {
+        'username': 'user12',
+        'password': 'password12',
+        'email': 'user12@phonex.ai',
+        'name': 'User Twelve',
+        'is_admin': False
+    },
+    {
+        'username': 'user13',
+        'password': 'password13',
+        'email': 'user13@phonex.ai',
+        'name': 'User Thirteen',
+        'is_admin': False
+    },
+    {
+        'username': 'user14',
+        'password': 'password14',
+        'email': 'user14@phonex.ai',
+        'name': 'User Fourteen',
+        'is_admin': False
+    },
+    {
+        'username': 'user15',
+        'password': 'password15',
+        'email': 'user15@phonex.ai',
+        'name': 'User Fifteen',
+        'is_admin': False
+    },
+    {
         'username': 'Annotator',
         'password': 'annotator@123',
         'email': 'annotator@phonex.ai',
