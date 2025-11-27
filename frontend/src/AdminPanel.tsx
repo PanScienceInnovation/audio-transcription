@@ -203,68 +203,30 @@ function AdminPanel() {
     setBulkAssigning(true);
     const selectedIds = Array.from(selectedTranscriptions);
     console.log(`🔄 Bulk assigning ${selectedIds.length} transcriptions to user ${bulkAssignUserId}`);
-    console.log('Selected IDs:', selectedIds);
-
-    let successCount = 0;
-    let errorCount = 0;
-    const errors: string[] = [];
 
     try {
       const config = getAxiosConfig();
-
-      // Assign all selected transcriptions in parallel
-      const assignments = selectedIds.map((id, index) =>
-        axios.post(
-          `${API_BASE_URL}/api/admin/transcriptions/${id}/assign`,
-          { assigned_user_id: bulkAssignUserId },
-          config
-        )
-          .then(response => {
-            // Verify the response indicates success
-            if (response.data && response.data.success) {
-              console.log(`✅ Assigned transcription ${index + 1}/${selectedIds.length}: ${id} to user ${bulkAssignUserId}`);
-              console.log(`   Response:`, response.data);
-              return { success: true, id, response };
-            } else {
-              const errorMsg = response.data?.error || 'Assignment failed - no success flag';
-              console.error(`❌ Assignment failed for ${id}:`, errorMsg);
-              errorCount++;
-              errors.push(`ID ${id}: ${errorMsg}`);
-              return { success: false, id, error: errorMsg };
-            }
-          })
-          .catch(error => {
-            errorCount++;
-            const errorMsg = error.response?.data?.error || error.message || 'Unknown error';
-            errors.push(`ID ${id}: ${errorMsg}`);
-            console.error(`❌ Failed to assign transcription ${id}:`, errorMsg);
-            if (error.response) {
-              console.error(`   Response status: ${error.response.status}`);
-              console.error(`   Response data:`, error.response.data);
-            }
-            return { success: false, id, error: errorMsg };
-          })
+      const response = await axios.post(
+        `${API_BASE_URL}/api/admin/transcriptions/bulk-assign`,
+        {
+          transcription_ids: selectedIds,
+          assigned_user_id: bulkAssignUserId
+        },
+        config
       );
 
-      const results = await Promise.all(assignments);
-      successCount = results.filter(r => r.success).length;
-
-      console.log(`📊 Assignment results: ${successCount} succeeded, ${errorCount} failed`);
-
-      if (successCount > 0) {
-        setMessage({
-          type: 'success',
-          text: `Successfully assigned ${successCount} transcription${successCount > 1 ? 's' : ''}${errorCount > 0 ? `. ${errorCount} failed.` : ''}`
-        });
+      if (response.data.success) {
+        const summary = response.data.summary;
+        const message = `Bulk assign completed: ${summary.total_successful} successful, ${summary.total_failed} failed`;
+        setMessage({ type: 'success', text: message });
         setSelectedTranscriptions(new Set()); // Clear selection
-        setBulkAssignUserId(''); // Reset dropdown
+        setBulkAssignUserId(''); // Clear user selection
         loadData(); // Reload data
       } else {
-        const errorDetails = errors.length > 0 ? ` Errors: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '...' : ''}` : '';
-        setMessage({ type: 'error', text: `Failed to assign transcriptions.${errorDetails}` });
+        setMessage({ type: 'error', text: response.data.error || 'Failed to assign transcriptions' });
       }
     } catch (error: any) {
-      console.error('❌ Bulk assignment error:', error);
+      console.error('❌ Error in bulk assignment:', error);
       setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to assign transcriptions' });
     } finally {
       setBulkAssigning(false);

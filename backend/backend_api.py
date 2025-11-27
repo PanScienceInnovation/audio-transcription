@@ -1437,6 +1437,123 @@ def assign_transcription(transcription_id):
         }), 500
 
 
+@app.route('/api/admin/transcriptions/bulk-assign', methods=['POST'])
+def bulk_assign_transcriptions():
+    """
+    Bulk assign transcriptions to a user (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    Body:
+        - transcription_ids: List of transcription IDs to assign
+        - assigned_user_id: User ID to assign the transcriptions to
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'Request body is required'
+            }), 400
+        
+        transcription_ids = data.get('transcription_ids', [])
+        assigned_user_id = data.get('assigned_user_id')
+        
+        if not isinstance(transcription_ids, list) or len(transcription_ids) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'transcription_ids must be a non-empty array'
+            }), 400
+        
+        if not assigned_user_id:
+            return jsonify({
+                'success': False,
+                'error': 'assigned_user_id is required'
+            }), 400
+        
+        # Verify user exists
+        if users_collection:
+            from bson import ObjectId
+            from bson.errors import InvalidId
+            
+            # Try to find user by ObjectId first
+            try:
+                user_obj_id = ObjectId(assigned_user_id)
+                user = users_collection.find_one({'_id': user_obj_id})
+            except (InvalidId, ValueError):
+                user = None
+            
+            # If not found by ObjectId, try by username
+            if not user:
+                user = users_collection.find_one({'username': assigned_user_id})
+            
+            if not user:
+                return jsonify({
+                    'success': False,
+                    'error': f'User not found: {assigned_user_id}'
+                }), 404
+        
+        # Assign each transcription
+        results = {
+            'successful': [],
+            'failed': []
+        }
+        
+        for transcription_id in transcription_ids:
+            try:
+                result = storage_manager.assign_transcription(transcription_id, assigned_user_id)
+                if result['success']:
+                    results['successful'].append({
+                        'id': transcription_id,
+                        'message': result.get('message', 'Assigned successfully')
+                    })
+                else:
+                    results['failed'].append({
+                        'id': transcription_id,
+                        'error': result.get('error', 'Failed to assign')
+                    })
+            except Exception as e:
+                results['failed'].append({
+                    'id': transcription_id,
+                    'error': str(e)
+                })
+        
+        total_requested = len(transcription_ids)
+        total_successful = len(results['successful'])
+        total_failed = len(results['failed'])
+        
+        return jsonify({
+            'success': True,
+            'message': f'Bulk assign completed: {total_successful} successful, {total_failed} failed',
+            'results': results,
+            'summary': {
+                'total_requested': total_requested,
+                'total_successful': total_successful,
+                'total_failed': total_failed,
+                'assigned_user_id': assigned_user_id
+            }
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error in bulk assign: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/transcriptions/<transcription_id>/unassign', methods=['POST'])
 def unassign_transcription(transcription_id):
     """
@@ -1969,6 +2086,7 @@ if __name__ == '__main__':
     print("   POST /api/transcriptions/<id>/flag    - Flag/unflag transcription")
     print("   DELETE /api/transcriptions/<id>       - Delete transcription by ID (admin only)")
     print("   POST /api/admin/transcriptions/bulk-delete - Bulk delete transcriptions (admin)")
+    print("   POST /api/admin/transcriptions/bulk-assign - Bulk assign transcriptions to user (admin)")
     print("   POST /api/admin/transcriptions/<id>/assign - Assign transcription to user (admin)")
     print("   POST /api/admin/transcriptions/<id>/unassign - Unassign transcription (admin)")
     print("   PUT  /api/admin/transcriptions/<id>/status - Update transcription status (admin)")
