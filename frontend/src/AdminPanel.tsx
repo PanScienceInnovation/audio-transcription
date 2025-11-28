@@ -1219,7 +1219,9 @@ function AdminPanel() {
               {[
                 "Transcribed Word not seperated",
                 "Transcribed words repeated",
-                "Missing transcribed words"
+                "Missing transcribed words",
+                "Audio file not found",
+                "Transcription not found"
               ].map((reason) => (
                 <button
                   key={reason}
