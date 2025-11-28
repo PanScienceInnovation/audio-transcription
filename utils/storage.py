@@ -718,7 +718,9 @@ class StorageManager:
             if language:
                 additional_filters.append({'transcription_data.language': language})
             
-            # Date filter (match created_at date)
+            # Date filter
+            # If status is 'done', filter by updated_at (when it was marked as done)
+            # Otherwise, filter by created_at (when it was created)
             if date:
                 try:
                     from datetime import datetime, timezone
@@ -727,8 +729,11 @@ class StorageManager:
                     # Create date range for the entire day
                     start_of_day = datetime.combine(date_obj.date(), datetime.min.time()).replace(tzinfo=timezone.utc)
                     end_of_day = datetime.combine(date_obj.date(), datetime.max.time()).replace(tzinfo=timezone.utc)
+                    
+                    # Use updated_at for done status, created_at for others
+                    date_field = 'updated_at' if status == 'done' else 'created_at'
                     additional_filters.append({
-                        'created_at': {
+                        date_field: {
                             '$gte': start_of_day,
                             '$lte': end_of_day
                         }
@@ -736,23 +741,59 @@ class StorageManager:
                 except ValueError:
                     print(f"⚠️  Invalid date format: {date}, ignoring date filter")
             
-            # Status filter (needs to be applied after document processing, but we can pre-filter some cases)
-            # Note: Status is computed from multiple fields, so we'll filter after processing
-            # But we can filter by manual_status if it exists
+            # Status filter
             if status:
-                # If status is 'flagged', we can filter by is_flagged
                 if status == 'flagged':
-                    additional_filters.append({'is_flagged': True})
+                    # Flagged if is_flagged is True OR manual_status is 'flagged'
+                    additional_filters.append({
+                        '$or': [
+                            {'is_flagged': True},
+                            {'manual_status': 'flagged'}
+                        ]
+                    })
                 elif status == 'done':
-                    # For 'done', we need both assigned_user_id and user_id to match
-                    # This is complex, so we'll filter after processing
-                    pass
+                    # Done if NOT flagged AND (manual_status='done' OR (manual_status unset/invalid AND assigned==user))
+                    additional_filters.append({
+                        '$and': [
+                            # Not flagged
+                            {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
+                            {'manual_status': {'$ne': 'flagged'}},
+                            # Done condition
+                            {'$or': [
+                                {'manual_status': 'done'},
+                                {
+                                    '$and': [
+                                        # manual_status not active (not done/pending/flagged)
+                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged']}},
+                                        {'assigned_user_id': {'$ne': None}},
+                                        {'user_id': {'$ne': None}},
+                                        {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
+                                    ]
+                                }
+                            ]}
+                        ]
+                    })
                 elif status == 'pending':
-                    # For 'pending', we can filter out flagged ones
-                    additional_filters.append({'$or': [
-                        {'is_flagged': False},
-                        {'is_flagged': {'$exists': False}}
-                    ]})
+                    # Pending if NOT flagged AND NOT done
+                    additional_filters.append({
+                        '$and': [
+                            # Not flagged
+                            {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
+                            {'manual_status': {'$ne': 'flagged'}},
+                            # Not done condition
+                            {'$nor': [
+                                {'manual_status': 'done'},
+                                {
+                                    '$and': [
+                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged']}},
+                                        {'assigned_user_id': {'$ne': None}},
+                                        {'user_id': {'$ne': None}},
+                                        {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
+                                    ]
+                                }
+                            ]}
+                        ]
+                    })
             
             # Assigned user filter
             if assigned_user:
@@ -788,11 +829,10 @@ class StorageManager:
                 else:
                     query_filter = {'$and': additional_filters} if len(additional_filters) > 1 else additional_filters[0]
             
-            # Note: If search or status filters are active, we need to process more documents
-            # to apply these filters correctly, then paginate. For now, we'll fetch a larger batch
-            # when these filters are active, filter in memory, then paginate.
-            # TODO: Optimize by storing computed status and adding text index for filename search
-            needs_post_filtering = bool(search or (status and status in ['done', 'pending']))
+            # Note: If search filter is active, we need to process more documents
+            # because search relies on fields that might be in metadata, audio_path, or S3 key
+            # TODO: Optimize by adding text index for filename search
+            needs_post_filtering = bool(search)
             
             # Calculate fetch size: if we need post-filtering, fetch more to account for filtering
             fetch_limit = limit * 10 if needs_post_filtering else limit
@@ -1060,11 +1100,12 @@ class StorageManager:
                 doc_user_id = doc.get('user_id')
                 manual_status = doc.get('manual_status')
                 
-                # Use manual_status if set by admin (highest priority)
-                if manual_status and manual_status in ['done', 'pending', 'flagged']:
-                    status = manual_status
-                elif is_flagged:
+                # Flagged status has highest priority
+                if is_flagged:
                     status = 'flagged'
+                # Use manual_status if set by admin
+                elif manual_status and manual_status in ['done', 'pending', 'flagged']:
+                    status = manual_status
                 # Status is "done" only if assigned AND the user_id matches assigned_user_id
                 elif assigned_user_id and doc_user_id and str(assigned_user_id) == str(doc_user_id):
                     status = 'done'

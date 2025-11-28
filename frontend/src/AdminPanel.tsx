@@ -751,7 +751,7 @@ function AdminPanel() {
               </div>
 
               {/* Second Row: User and Flag Filters */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+              <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 ${statusFilter === 'done' && dateFilter ? 'mb-6' : 'mb-4'}`}>
                 <select
                   value={assignedUserFilter}
                   onChange={(e) => setAssignedUserFilter(e.target.value)}
@@ -774,13 +774,23 @@ function AdminPanel() {
                   <option value="flagged">Flagged Only</option>
                   <option value="not-flagged">Not Flagged</option>
                 </select> */}
-                <input
-                  type="date"
-                  value={dateFilter}
-                  onChange={(e) => setDateFilter(e.target.value)}
-                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                  placeholder="Filter by date"
-                />
+                <div className="relative">
+                  <input
+                    type="date"
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white w-full"
+                    placeholder="Filter by date"
+                    title={statusFilter === 'done' 
+                      ? "Filter by updated date (when file was marked as done)" 
+                      : "Filter by created date"}
+                  />
+                  {statusFilter === 'done' && dateFilter && (
+                    <span className="absolute -bottom-5 left-0 text-xs text-gray-500 whitespace-nowrap">
+                      Filtering by updated date
+                    </span>
+                  )}
+                </div>
                 {/* Clear Filters Button */}
                 {(searchTerm || languageFilter || dateFilter || statusFilter || assignedUserFilter) && (
                   <div className="flex items-center gap-2">
@@ -922,31 +932,31 @@ function AdminPanel() {
                         )}
                       </button>
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider w-16">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider w-16 pointer-events-none">
                       S.No.
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Filename
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Language
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Created
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Updated at
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Status
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Edited Words
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Assigned To
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Actions
                     </th>
                   </tr>

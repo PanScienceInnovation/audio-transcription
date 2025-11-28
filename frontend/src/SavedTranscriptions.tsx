@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit, ChevronLeft, ChevronRight, Search, ArrowUpDown, ArrowUp, ArrowDown, FolderOpen, Flag, History } from 'lucide-react';
+import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit, ChevronLeft, ChevronRight, Search, FolderOpen, Flag, History } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
@@ -106,8 +106,6 @@ function SavedTranscriptions() {
   const [languageFilter, setLanguageFilter] = useState<string>('');
   const [transcriptionTypeFilter, setTranscriptionTypeFilter] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
-  const [sortField, setSortField] = useState<'filename' | 'status' | 'created_at'>('created_at');
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [audioUrl, setAudioUrl] = useState('');
   const [currentPlayingIndex, setCurrentPlayingIndex] = useState<number | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -212,52 +210,18 @@ function SavedTranscriptions() {
       });
     }
 
-    // Apply sorting
-    filtered.sort((a, b) => {
-      // First, sort by status (pending first, then done)
-      const aStatus = a.status || 'pending';
-      const bStatus = b.status || 'pending';
-      
-      // If statuses are different, pending comes first
-      if (aStatus !== bStatus) {
-        if (aStatus === 'pending') return -1;
-        if (bStatus === 'pending') return 1;
-      }
-      
-      // If statuses are the same (or both are done), apply secondary sort
-      let aValue: any;
-      let bValue: any;
-
-      if (sortField === 'filename') {
-        aValue = (a.filename || '').toLowerCase();
-        bValue = (b.filename || '').toLowerCase();
-      } else if (sortField === 'status') {
-        // When sorting by status, we've already sorted by status above, so just use secondary sort by created_at
-        aValue = new Date(a.created_at).getTime();
-        bValue = new Date(b.created_at).getTime();
-      } else if (sortField === 'created_at') {
-        aValue = new Date(a.created_at).getTime();
-        bValue = new Date(b.created_at).getTime();
-      }
-
-      // Apply secondary sort direction
-      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
-      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
-    });
-
     setTotalItems(filtered.length);
 
     // Apply pagination
     const skip = (currentPage - 1) * itemsPerPage;
     const paginated = filtered.slice(skip, skip + itemsPerPage);
     setTranscriptions(paginated);
-  }, [allTranscriptions, searchTerm, statusFilter, languageFilter, transcriptionTypeFilter, dateFilter, sortField, sortDirection, currentPage, itemsPerPage]);
+  }, [allTranscriptions, searchTerm, statusFilter, languageFilter, transcriptionTypeFilter, dateFilter, currentPage, itemsPerPage]);
 
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, statusFilter, languageFilter, transcriptionTypeFilter, dateFilter, sortField, sortDirection]);
+  }, [searchTerm, statusFilter, languageFilter, transcriptionTypeFilter, dateFilter]);
 
   const fetchTranscriptionDetails = async (id: string) => {
     setLoadingDetails(true);
@@ -1355,76 +1319,25 @@ function SavedTranscriptions() {
               <table className="w-full">
                 <thead className="bg-gray-100">
                   <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider w-16">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider w-16 pointer-events-none">
                       S.No.
                     </th>
-                    <th 
-                      className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
-                      onClick={() => {
-                        if (sortField === 'filename') {
-                          setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-                        } else {
-                          setSortField('filename');
-                          setSortDirection('asc');
-                        }
-                      }}
-                    >
-                      <div className="flex items-center gap-2">
-                        Filename
-                        {sortField === 'filename' ? (
-                          sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
-                        ) : (
-                          <ArrowUpDown className="h-4 w-4 text-gray-400" />
-                        )}
-                      </div>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                      Filename
                     </th>
-                    <th 
-                      className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
-                      onClick={() => {
-                        if (sortField === 'status') {
-                          setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-                        } else {
-                          setSortField('status');
-                          setSortDirection('asc');
-                        }
-                      }}
-                    >
-                      <div className="flex items-center gap-2">
-                        Status
-                        {sortField === 'status' ? (
-                          sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
-                        ) : (
-                          <ArrowUpDown className="h-4 w-4 text-gray-400" />
-                        )}
-                      </div>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                      Status
                     </th>
-                    <th 
-                      className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider cursor-pointer hover:bg-gray-200"
-                      onClick={() => {
-                        if (sortField === 'created_at') {
-                          setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-                        } else {
-                          setSortField('created_at');
-                          setSortDirection('desc');
-                        }
-                      }}
-                    >
-                      <div className="flex items-center gap-2">
-                        Created Date
-                        {sortField === 'created_at' ? (
-                          sortDirection === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />
-                        ) : (
-                          <ArrowUpDown className="h-4 w-4 text-gray-400" />
-                        )}
-                      </div>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                      Created Date
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Type
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Language
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Actions
                     </th>
                   </tr>

@@ -2013,13 +2013,26 @@ def download_done_transcriptions():
             }), 500
         
         # Query for transcriptions with status 'done'
-        # Status 'done' means: assigned_user_id exists AND user_id matches assigned_user_id
-        # (meaning the assigned user has saved changes)
-        # Note: Both fields are stored as strings, so we can compare them directly
+        # Status 'done' means: NOT flagged AND (manual_status='done' OR (manual_status unset/invalid AND assigned==user))
         query_filter = {
-            'assigned_user_id': {'$ne': None, '$exists': True},
-            'user_id': {'$ne': None, '$exists': True},
-            '$expr': {'$eq': ['$assigned_user_id', '$user_id']}
+            '$and': [
+                # Not flagged
+                {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
+                {'manual_status': {'$ne': 'flagged'}},
+                # Done condition
+                {'$or': [
+                    {'manual_status': 'done'},
+                    {
+                        '$and': [
+                            # manual_status not active (not done/pending/flagged)
+                            {'manual_status': {'$nin': ['done', 'pending', 'flagged']}},
+                            {'assigned_user_id': {'$ne': None, '$exists': True}},
+                            {'user_id': {'$ne': None, '$exists': True}},
+                            {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
+                        ]
+                    }
+                ]}
+            ]
         }
         
         # Get all done transcriptions
