@@ -1171,8 +1171,8 @@ class StorageManager:
             # Get current transcription data
             current_transcription_data = current_doc.get('transcription_data', {})
             
-            # Track version history - find the FIRST change only
-            change_found = None
+            # Track version history - collect ALL changes (modifications, additions, deletions)
+            all_changes = []
             
             # Compare words if transcription type is 'words'
             if transcription_data.get('transcription_type') == 'words':
@@ -1188,7 +1188,11 @@ class StorageManager:
                 old_word_keys = {word_key(w) for w in old_words}
                 new_word_keys = {word_key(w) for w in new_words}
                 
-                # PRIORITY 1: Check for modifications first (words at same position that changed)
+                # Track modifications and keep track of which keys were modified to avoid double-counting
+                modified_old_keys = set()
+                modified_new_keys = set()
+                
+                # Track all modifications (words at same position that changed)
                 # This must be checked before additions/deletions to avoid false positives
                 for i in range(min(len(old_words), len(new_words))):
                     old_word = old_words[i]
@@ -1205,7 +1209,7 @@ class StorageManager:
                         
                         if not old_exists_elsewhere and not new_exists_elsewhere:
                             # True modification at this position
-                            change_found = {
+                            all_changes.append({
                                 'before': {
                                     'word': old_word.get('word', ''),
                                     'start': old_word.get('start', ''),
@@ -1216,40 +1220,38 @@ class StorageManager:
                                     'start': new_word.get('start', ''),
                                     'end': new_word.get('end', '')
                                 }
-                            }
-                            break
+                            })
+                            # Track these keys as modified to exclude from additions/deletions
+                            modified_old_keys.add(old_key)
+                            modified_new_keys.add(new_key)
                 
-                # PRIORITY 2: If no modification found, check for additions (words in new but not in old)
-                if change_found is None:
-                    for new_word in new_words:
-                        new_key = word_key(new_word)
-                        if new_key not in old_word_keys:
-                            # This is a new word
-                            change_found = {
-                                'before': None,
-                                'after': {
-                                    'word': new_word.get('word', ''),
-                                    'start': new_word.get('start', ''),
-                                    'end': new_word.get('end', '')
-                                }
+                # Track all additions (words in new but not in old, excluding modifications)
+                for new_word in new_words:
+                    new_key = word_key(new_word)
+                    if new_key not in old_word_keys and new_key not in modified_new_keys:
+                        # This is a new word (not a modification)
+                        all_changes.append({
+                            'before': None,
+                            'after': {
+                                'word': new_word.get('word', ''),
+                                'start': new_word.get('start', ''),
+                                'end': new_word.get('end', '')
                             }
-                            break
+                        })
                 
-                # PRIORITY 3: If no modification or addition found, check for deletions
-                if change_found is None:
-                    for old_word in old_words:
-                        old_key = word_key(old_word)
-                        if old_key not in new_word_keys:
-                            # This word was deleted
-                            change_found = {
-                                'before': {
-                                    'word': old_word.get('word', ''),
-                                    'start': old_word.get('start', ''),
-                                    'end': old_word.get('end', '')
-                                },
-                                'after': None
-                            }
-                            break
+                # Track all deletions (words in old but not in new, excluding modifications)
+                for old_word in old_words:
+                    old_key = word_key(old_word)
+                    if old_key not in new_word_keys and old_key not in modified_old_keys:
+                        # This word was deleted (not a modification)
+                        all_changes.append({
+                            'before': {
+                                'word': old_word.get('word', ''),
+                                'start': old_word.get('start', ''),
+                                'end': old_word.get('end', '')
+                            },
+                            'after': None
+                        })
             
             # Compare phrases if transcription type is 'phrases'
             elif transcription_data.get('transcription_type') == 'phrases':
@@ -1265,7 +1267,11 @@ class StorageManager:
                 old_phrase_keys = {phrase_key(p) for p in old_phrases}
                 new_phrase_keys = {phrase_key(p) for p in new_phrases}
                 
-                # PRIORITY 1: Check for modifications first (phrases at same position that changed)
+                # Track modifications and keep track of which keys were modified to avoid double-counting
+                modified_old_keys = set()
+                modified_new_keys = set()
+                
+                # Track all modifications (phrases at same position that changed)
                 for i in range(min(len(old_phrases), len(new_phrases))):
                     old_phrase = old_phrases[i]
                     new_phrase = new_phrases[i]
@@ -1279,7 +1285,7 @@ class StorageManager:
                         
                         if not old_exists_elsewhere and not new_exists_elsewhere:
                             # True modification at this position
-                            change_found = {
+                            all_changes.append({
                                 'before': {
                                     'word': old_phrase.get('text', ''),
                                     'start': old_phrase.get('start', ''),
@@ -1290,52 +1296,57 @@ class StorageManager:
                                     'start': new_phrase.get('start', ''),
                                     'end': new_phrase.get('end', '')
                                 }
-                            }
-                            break
+                            })
+                            # Track these keys as modified to exclude from additions/deletions
+                            modified_old_keys.add(old_key)
+                            modified_new_keys.add(new_key)
                 
-                # PRIORITY 2: If no modification found, check for additions (phrases in new but not in old)
-                if change_found is None:
-                    for new_phrase in new_phrases:
-                        new_key = phrase_key(new_phrase)
-                        if new_key not in old_phrase_keys:
-                            # This is a new phrase
-                            change_found = {
-                                'before': None,
-                                'after': {
-                                    'word': new_phrase.get('text', ''),
-                                    'start': new_phrase.get('start', ''),
-                                    'end': new_phrase.get('end', '')
-                                }
+                # Track all additions (phrases in new but not in old, excluding modifications)
+                for new_phrase in new_phrases:
+                    new_key = phrase_key(new_phrase)
+                    if new_key not in old_phrase_keys and new_key not in modified_new_keys:
+                        # This is a new phrase (not a modification)
+                        all_changes.append({
+                            'before': None,
+                            'after': {
+                                'word': new_phrase.get('text', ''),
+                                'start': new_phrase.get('start', ''),
+                                'end': new_phrase.get('end', '')
                             }
-                            break
+                        })
                 
-                # PRIORITY 3: If no modification or addition found, check for deletions
-                if change_found is None:
-                    for old_phrase in old_phrases:
-                        old_key = phrase_key(old_phrase)
-                        if old_key not in new_phrase_keys:
-                            # This phrase was deleted
-                            change_found = {
-                                'before': {
-                                    'word': old_phrase.get('text', ''),
-                                    'start': old_phrase.get('start', ''),
-                                    'end': old_phrase.get('end', '')
-                                },
-                                'after': None
-                            }
-                            break
+                # Track all deletions (phrases in old but not in new, excluding modifications)
+                for old_phrase in old_phrases:
+                    old_key = phrase_key(old_phrase)
+                    if old_key not in new_phrase_keys and old_key not in modified_old_keys:
+                        # This phrase was deleted (not a modification)
+                        all_changes.append({
+                            'before': {
+                                'word': old_phrase.get('text', ''),
+                                'start': old_phrase.get('start', ''),
+                                'end': old_phrase.get('end', '')
+                            },
+                            'after': None
+                        })
             
-            # Save version history to separate collection if change found
-            if change_found and self.version_history_collection:
-                version_doc = {
-                    'transcription_id': document_id,
-                    'timestamp': datetime.now(timezone.utc),
-                    'user_id': str(user_id) if user_id else None,
-                    'before': change_found['before'],
-                    'after': change_found['after']
-                }
-                self.version_history_collection.insert_one(version_doc)
-                print(f"✅ Saved version history entry for transcription: {document_id}")
+            # Save all version history entries to separate collection
+            if all_changes and self.version_history_collection:
+                timestamp = datetime.now(timezone.utc)
+                version_docs = []
+                for change in all_changes:
+                    version_doc = {
+                        'transcription_id': document_id,
+                        'timestamp': timestamp,
+                        'user_id': str(user_id) if user_id else None,
+                        'before': change['before'],
+                        'after': change['after']
+                    }
+                    version_docs.append(version_doc)
+                
+                # Insert all changes as separate version history entries
+                if version_docs:
+                    self.version_history_collection.insert_many(version_docs)
+                    print(f"✅ Saved {len(version_docs)} version history entries for transcription: {document_id}")
             
             # Prepare update data
             update_data = {
@@ -1368,8 +1379,8 @@ class StorageManager:
                 }
             
             print(f"✅ Updated transcription in MongoDB: {document_id}")
-            if change_found:
-                print(f"   Tracked version history entry")
+            if all_changes:
+                print(f"   Tracked {len(all_changes)} version history entries")
             
             return {
                 'success': True,
