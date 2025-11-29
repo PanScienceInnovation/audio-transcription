@@ -1336,6 +1336,62 @@ def update_transcription_status(transcription_id):
         }), 500
 
 
+@app.route('/api/admin/transcriptions/<transcription_id>/remarks', methods=['PUT'])
+def update_transcription_remarks(transcription_id):
+    """
+    Update transcription remarks (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    JSON Body:
+        - remarks: String (the remarks text)
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        data = request.get_json()
+        # Allow empty string to clear remarks, but data must be present
+        if data is None or 'remarks' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'remarks field is required'
+            }), 400
+        
+        remarks = data.get('remarks', '')
+        
+        result = storage_manager.update_transcription_remarks(transcription_id, remarks)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'message': result.get('message', 'Remarks updated'),
+                'document_id': result.get('document_id'),
+                'remarks': result.get('remarks')
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', 'Failed to update remarks')
+            }), 500
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error updating transcription remarks: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/transcriptions/<transcription_id>/assign', methods=['POST'])
 def assign_transcription(transcription_id):
     """

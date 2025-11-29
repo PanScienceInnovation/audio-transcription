@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
-import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, Search, Flag, History } from 'lucide-react';
+import { Upload, Play, Download, Save, Edit2, Check, X, Loader2, Database, Edit, FolderOpen, Trash2, Plus, ChevronLeft, ChevronRight, Search, Flag, History, MessageSquare } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
@@ -108,6 +108,14 @@ interface SavedTranscriptionDocument {
 function App() {
   const { filename } = useParams<{ filename?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  
+  // Helper function to get the back navigation path based on where user came from
+  const getBackPath = (): string => {
+    const searchParams = new URLSearchParams(location.search);
+    const from = searchParams.get('from');
+    return from === 'admin' ? '/admin' : '/word-level';
+  };
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [referenceText, setReferenceText] = useState('');
@@ -341,20 +349,20 @@ function App() {
             }
           } else {
             alert(`Error: ${detailResponse.data.error}`);
-            navigate('/word-level');
+            navigate(getBackPath());
           }
         } else {
           alert(`Transcription with filename "${filenameToLoad}" not found`);
-          navigate('/word-level');
+          navigate(getBackPath());
         }
       } else {
         alert(`Error: ${response.data.error}`);
-        navigate('/word-level');
+        navigate(getBackPath());
       }
     } catch (error: any) {
       console.error('Error loading transcription:', error);
       alert(`Error: ${error.response?.data?.error || error.message}`);
-      navigate('/word-level');
+      navigate(getBackPath());
     } finally {
       setLoadingSaved(false);
     }
@@ -1679,6 +1687,27 @@ function App() {
                           }
                           return null;
                         })()}
+
+                        {/* Display remarks if available */}
+                        {(() => {
+                          const savedRecord = allSavedTranscriptions.find(t => 
+                            t.filename === transcriptionData.metadata?.filename || 
+                            t._id === currentTranscriptionId
+                          );
+                          
+                          if (savedRecord && (savedRecord as any).remarks) {
+                            return (
+                              <div className="mt-2 p-3 bg-blue-50 rounded-lg border border-blue-100">
+                                <h4 className="text-sm font-semibold text-blue-800 mb-1 flex items-center gap-1">
+                                  <MessageSquare className="h-4 w-4" />
+                                  Remarks
+                                </h4>
+                                <p className="text-sm text-blue-900 whitespace-pre-wrap">{(savedRecord as any).remarks}</p>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
                       </div>
                     </div>
                   )}
@@ -1797,7 +1826,7 @@ function App() {
                         const confirmReset = window.confirm('Discard changes and go back?');
                         if (!confirmReset) return;
                       }
-                      navigate('/word-level');
+                      navigate(getBackPath());
                     }}
                     className="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
                   >

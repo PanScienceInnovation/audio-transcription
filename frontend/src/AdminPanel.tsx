@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Users, FileText, UserCheck, UserX, Loader2, Search, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download, Trash2, Flag } from 'lucide-react';
+import { Users, FileText, UserCheck, UserX, Loader2, Search, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download, Trash2, Flag, Eye, MessageSquare } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
 
@@ -55,6 +55,7 @@ interface Transcription {
   transcription_type?: 'words' | 'phrases';
   is_flagged?: boolean;
   audio_duration?: number;
+  remarks?: string;
 }
 
 function AdminPanel() {
@@ -85,6 +86,12 @@ function AdminPanel() {
   const [showFlagDropdown, setShowFlagDropdown] = useState<string | null>(null);
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
+  const [remarksModal, setRemarksModal] = useState<{ isOpen: boolean; transcriptionId: string | null; remarks: string }>({
+    isOpen: false,
+    transcriptionId: null,
+    remarks: ''
+  });
+  const [savingRemarks, setSavingRemarks] = useState(false);
 
   const { isAdmin } = getUserInfo();
 
@@ -486,10 +493,42 @@ function AdminPanel() {
     }
   };
 
+  const handleSaveRemarks = async () => {
+    if (!remarksModal.transcriptionId) return;
+    
+    setSavingRemarks(true);
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.put(
+        `${API_BASE_URL}/api/admin/transcriptions/${remarksModal.transcriptionId}/remarks`,
+        { remarks: remarksModal.remarks },
+        config
+      );
+
+      if (response.data.success) {
+        setMessage({ type: 'success', text: 'Remarks updated successfully' });
+        setRemarksModal({ isOpen: false, transcriptionId: null, remarks: '' });
+        loadData(); // Reload data
+      } else {
+        setMessage({ type: 'error', text: response.data.error || 'Failed to update remarks' });
+      }
+    } catch (error: any) {
+      console.error('Error updating remarks:', error);
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to update remarks' });
+    } finally {
+      setSavingRemarks(false);
+    }
+  };
+
   const getUserName = (userId: string | undefined) => {
     if (!userId) return 'Unassigned';
     const user = users.find(u => u._id === userId);
     return user ? user.name || user.username : userId;
+  };
+
+  const handleLoadTranscription = (filename: string) => {
+    const encodedFilename = encodeURIComponent(filename);
+    navigate(`/word-level/transcription/${encodedFilename}?from=admin`);
   };
 
   // Helper function to format duration in hours, minutes, and seconds
@@ -932,31 +971,31 @@ function AdminPanel() {
                         )}
                       </button>
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider w-16 pointer-events-none">
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider w-16 pointer-events-none">
                       S.No.
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Filename
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Language
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
-                      Created
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                      Created at
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Updated at
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Status
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Edited Words
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Assigned To
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Actions
                     </th>
                   </tr>
@@ -988,10 +1027,14 @@ function AdminPanel() {
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <div className="flex items-center">
-                            <FileText className="h-5 w-5 text-gray-400 mr-2" />
-                            <span className="text-sm font-medium text-gray-900">
+                            {/* <FileText className="h-5 w-5 text-gray-400 mr-2" /> */}
+                            <button
+                              onClick={() => handleLoadTranscription(transcription.filename)}
+                              className="text-sm font-medium text-gray-900 hover:text-blue-600 hover:underline transition-colors"
+                              title="Load transcription"
+                            >
                               {transcription.filename}
-                            </span>
+                            </button>
                           </div>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
@@ -1045,7 +1088,25 @@ function AdminPanel() {
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
                           <div className="flex items-center gap-2">
-                            <select
+                            <button
+                              onClick={() => handleLoadTranscription(transcription.filename)}
+                              className="text-blue-600 hover:text-blue-800 disabled:opacity-50 p-1"
+                              title="Load transcription in detailed view"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => setRemarksModal({
+                                isOpen: true,
+                                transcriptionId: transcription._id,
+                                remarks: transcription.remarks || ''
+                              })}
+                              className={`p-1 rounded-lg transition-colors ${transcription.remarks ? 'text-blue-600 hover:text-blue-800 bg-blue-50' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+                              title={transcription.remarks ? "Edit remarks" : "Add remarks"}
+                            >
+                              <MessageSquare className="h-4 w-4" />
+                            </button>
+                            {/* <select
                               value={selectedUserId}
                               onChange={(e) => {
                                 const userId = e.target.value;
@@ -1064,7 +1125,7 @@ function AdminPanel() {
                                   {user.name || user.username}
                                 </option>
                               ))}
-                            </select>
+                            </select> */}
                             {transcription.assigned_user_id && (
                               <button
                                 onClick={() => {
@@ -1234,6 +1295,54 @@ function AdminPanel() {
                   {reason}
                 </button>
               ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Remarks Modal */}
+      {remarksModal.isOpen && (
+        <>
+          <div className="fixed inset-0 bg-black bg-opacity-50 z-[100]" onClick={() => !savingRemarks && setRemarksModal({ ...remarksModal, isOpen: false })}></div>
+          <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white rounded-lg shadow-xl border border-gray-200 z-[101] w-96 p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">Transcription Remarks</h3>
+              <button 
+                onClick={() => !savingRemarks && setRemarksModal({ ...remarksModal, isOpen: false })}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <textarea
+              value={remarksModal.remarks}
+              onChange={(e) => setRemarksModal({ ...remarksModal, remarks: e.target.value })}
+              className="w-full h-32 p-2 border border-gray-300 rounded-lg mb-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+              placeholder="Enter remarks here..."
+              disabled={savingRemarks}
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setRemarksModal({ ...remarksModal, isOpen: false })}
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg"
+                disabled={savingRemarks}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveRemarks}
+                disabled={savingRemarks}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {savingRemarks ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  'Save Remarks'
+                )}
+              </button>
             </div>
           </div>
         </>

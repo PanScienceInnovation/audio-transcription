@@ -239,6 +239,11 @@ class StorageManager:
             if not user_id:
                 user_id = 'anonymous'
             
+            # Calculate edited_words_count if words are present
+            if 'words' in transcription_data:
+                edited_count = sum(1 for w in transcription_data['words'] if w.get('is_edited', False))
+                transcription_data['edited_words_count'] = edited_count
+            
             # Prepare document
             # assigned_user_id is None by default - admin will assign it later
             document = {
@@ -653,6 +658,68 @@ class StorageManager:
                 'error': f"Error updating transcription status: {str(e)}"
             }
     
+    def update_transcription_remarks(self, document_id: str, remarks: str) -> Dict[str, Any]:
+        """
+        Update transcription remarks (admin only operation).
+        
+        Args:
+            document_id: MongoDB document ID
+            remarks: Remarks text
+            
+        Returns:
+            Dictionary with update result
+        """
+        try:
+            if not self.collection:
+                return {
+                    'success': False,
+                    'error': 'MongoDB not initialized'
+                }
+            
+            from bson import ObjectId
+            from bson.errors import InvalidId
+            
+            # Validate and convert ObjectId
+            try:
+                obj_id = ObjectId(document_id)
+            except (InvalidId, ValueError) as e:
+                return {
+                    'success': False,
+                    'error': f'Invalid transcription ID format: {str(e)}'
+                }
+            
+            # Update the remarks field
+            update_result = self.collection.update_one(
+                {'_id': obj_id},
+                {
+                    '$set': {
+                        'remarks': remarks,
+                        'updated_at': datetime.now(timezone.utc)
+                    }
+                }
+            )
+            
+            if update_result.matched_count == 0:
+                return {
+                    'success': False,
+                    'error': 'Transcription not found'
+                }
+            
+            print(f"✅ Updated transcription remarks: {document_id}")
+            
+            return {
+                'success': True,
+                'document_id': document_id,
+                'remarks': remarks,
+                'message': 'Remarks updated successfully'
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Error updating transcription remarks: {str(e)}"
+            }
+    
     def list_transcriptions(self, limit: int = 100, skip: int = 0, user_id: Optional[str] = None, is_admin: bool = False,
                            search: Optional[str] = None, language: Optional[str] = None, 
                            date: Optional[str] = None, status: Optional[str] = None,
@@ -861,7 +928,8 @@ class StorageManager:
                 'transcription_data.metadata.audio_path': 1,
                 'transcription_data.edited_words_count': 1,  # Use stored count if available
                 's3_metadata.url': 1,
-                's3_metadata.key': 1
+                's3_metadata.key': 1,
+                'remarks': 1
             }
             
             find_start = time.time()
@@ -982,7 +1050,8 @@ class StorageManager:
                     'status': computed_status,  # 'done', 'pending', or 'flagged'
                     'is_flagged': is_flagged,
                     'flag_reason': doc.get('flag_reason'),
-                    'edited_words_count': edited_words_count  # Number of words edited
+                    'edited_words_count': edited_words_count,  # Number of words edited
+                    'remarks': doc.get('remarks')
                 }
                 transcriptions.append(summary)
             
@@ -1349,6 +1418,12 @@ class StorageManager:
                     print(f"✅ Saved {len(version_docs)} version history entries for transcription: {document_id}")
             
             # Prepare update data
+            
+            # Calculate edited_words_count if words are present
+            if transcription_data.get('transcription_type') == 'words' and 'words' in transcription_data:
+                edited_count = sum(1 for w in transcription_data['words'] if w.get('is_edited', False))
+                transcription_data['edited_words_count'] = edited_count
+                
             update_data = {
                 'transcription_data': transcription_data,
                 'updated_at': datetime.now(timezone.utc)
