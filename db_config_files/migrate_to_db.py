@@ -298,7 +298,7 @@ def check_duplicate(folder_id: str, storage_manager: StorageManager) -> bool:
 def main():
     """Main function to process all folders in data/flagged_data/data_2/."""
     # Configuration
-    data_dir = os.path.join(os.path.dirname(__file__), 'data', 'flagged_data', 'data_2')
+    data_dir = os.path.join(os.path.dirname(__file__), 'data', 'flagged_data', 'data_3')
     user_id = os.getenv('UPLOAD_USER_ID', 'anonymous')  # Optional: set user ID
     
     # Check if directory exists
