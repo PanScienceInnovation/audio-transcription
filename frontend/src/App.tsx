@@ -46,6 +46,7 @@ interface Word {
   duration: number;
   language: string;
   is_edited?: boolean;
+  edited_in_review_round?: boolean; // True if edited during review round (round 1)
 }
 
 interface TranscriptionData {
@@ -163,6 +164,7 @@ function App() {
   const [clearingVersionHistory, setClearingVersionHistory] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
+  const [currentReviewRound, setCurrentReviewRound] = useState<number>(0);
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -335,6 +337,9 @@ function App() {
 
               setTranscriptionData(loadedData);
               setCurrentTranscriptionId(doc._id);
+              // Store review_round from the document
+              const reviewRound = (doc as any).review_round || 0;
+              setCurrentReviewRound(reviewRound);
 
               // Set audio URL using proxy endpoint
               if (doc.s3_metadata?.url) {
@@ -618,6 +623,7 @@ function App() {
         end: secondsToTimeString(end),
         duration: end - start,
         is_edited: true, // Mark as edited when timings are changed
+        edited_in_review_round: currentReviewRound === 1, // Mark if edited during review round
       };
 
       setTranscriptionData({
@@ -736,6 +742,8 @@ function App() {
       word: wordText,
       duration: endSeconds - startSeconds,
       language: transcriptionData.language,
+      is_edited: true, // New words are considered edited
+      edited_in_review_round: currentReviewRound === 1, // Mark if added during review round
     };
 
     // Insert word at the correct position based on start time
@@ -820,6 +828,7 @@ function App() {
       word: editValues.word,
       duration: timeToSeconds(editValues.end) - timeToSeconds(editValues.start),
       is_edited: true, // Mark as edited
+      edited_in_review_round: currentReviewRound === 1, // Mark if edited during review round
     };
 
     setTranscriptionData({
@@ -903,7 +912,9 @@ function App() {
 
           if (response.data.success) {
             const status = response.data.status || 'done';
-            const reviewRound = response.data.review_round;
+            const reviewRound = response.data.review_round || 0;
+            // Update current review round state
+            setCurrentReviewRound(reviewRound);
             const message = status === 'completed' 
               ? 'File completed successfully! This file has passed both review stages.'
               : reviewRound === 1
@@ -1108,11 +1119,16 @@ function App() {
     
     const wordObj = transcriptionData.words[index];
     const isEdited = wordObj?.is_edited === true;
+    const editedInReviewRound = wordObj?.edited_in_review_round === true;
     
     let classes = 'inline-block px-3 py-2 m-1 rounded border-2 cursor-pointer transition-all duration-200 hover:shadow-lg';
 
-    // Edited words get special highlighting (highest priority)
-    if (isEdited) {
+    // Words edited in review round get orange highlighting (highest priority)
+    if (editedInReviewRound) {
+      classes += ' bg-orange-100 border-orange-400 text-orange-900';
+    }
+    // Edited words get special highlighting
+    else if (isEdited) {
       classes += ' word-edited';
     } else if (currentPlayingIndex === index) {
       classes += ' word-playing';

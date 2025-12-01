@@ -62,6 +62,7 @@ interface Transcription {
     new_assigned_user_id?: string;
   }>;
   edited_words_count?: number;
+  review_round_edited_words_count?: number;
   total_words?: number;
   transcription_type?: 'words' | 'phrases';
   is_flagged?: boolean;
@@ -1202,6 +1203,9 @@ function AdminPanel() {
                       Edited Words
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                      Edited Words in Review Round
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Current Assignee
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
@@ -1215,7 +1219,7 @@ function AdminPanel() {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {paginatedTranscriptions.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={12} className="px-4 py-8 text-center text-gray-500">
                         {searchTerm ? 'No transcriptions match your search' : 'No transcriptions found'}
                       </td>
                     </tr>
@@ -1295,6 +1299,13 @@ function AdminPanel() {
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                           {transcription.transcription_type === 'words' && transcription.edited_words_count !== undefined
                             ? `${transcription.edited_words_count} / ${transcription.total_words || 0}`
+                            : transcription.transcription_type === 'phrases'
+                              ? 'N/A'
+                              : '—'}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {transcription.transcription_type === 'words' && transcription.review_round_edited_words_count !== undefined
+                            ? `${transcription.review_round_edited_words_count} / ${transcription.total_words || 0}`
                             : transcription.transcription_type === 'phrases'
                               ? 'N/A'
                               : '—'}

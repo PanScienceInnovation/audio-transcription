@@ -1173,14 +1173,8 @@ def save_file(transcription_id):
         else:
             computed_status = 'pending'
         
-        # Check if status is "completed" (the final state)
-        if computed_status == 'completed' or current_status == 'completed':
-            return jsonify({
-                'success': False,
-                'error': 'File is already completed'
-            }), 400
-        
         # Validation: Check if user is assigned to this file
+        # Note: Completed files can now be edited, so we don't block them here
         assigned_user_id = current_doc.get('assigned_user_id')
         if not assigned_user_id or str(assigned_user_id) != str(user_id):
             return jsonify({
@@ -1197,11 +1191,18 @@ def save_file(transcription_id):
             review_round = 0
         
         # Determine new status based on review_round
+        # If file is already completed, keep it as completed
         previous_status = computed_status
         new_status = None
         new_review_round = review_round
         
-        if review_round == 0:
+        if computed_status == 'completed' or current_status == 'completed':
+            # File is already completed - keep it as completed when saving
+            new_status = 'completed'
+            # Ensure review_round is 1 for completed files
+            if review_round != 1:
+                new_review_round = 1
+        elif review_round == 0:
             # First reviewer: status = "done", review_round stays 0
             new_status = 'done'
         elif review_round == 1:

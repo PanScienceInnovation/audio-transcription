@@ -953,6 +953,7 @@ class StorageManager:
                 'transcription_data.metadata.filename': 1,
                 'transcription_data.metadata.audio_path': 1,
                 'transcription_data.edited_words_count': 1,  # Use stored count if available
+                'transcription_data.words': 1,  # Include words to count review_round_edited_words
                 's3_metadata.url': 1,
                 's3_metadata.key': 1,
                 'remarks': 1
@@ -1025,6 +1026,15 @@ class StorageManager:
                 # Otherwise default to 0 (words array excluded from projection for performance)
                 edited_words_count = transcription_data.get('edited_words_count', 0)
                 
+                # Calculate review round edited words count (words with edited_in_review_round: true)
+                review_round_edited_words_count = 0
+                words = transcription_data.get('words', [])
+                if words and isinstance(words, list):
+                    review_round_edited_words_count = sum(
+                        1 for word in words 
+                        if isinstance(word, dict) and word.get('edited_in_review_round') is True
+                    )
+                
                 # Determine status:
                 # Priority order:
                 # 1. "flagged" if is_flagged is True (highest priority - flagged files stay flagged)
@@ -1095,6 +1105,7 @@ class StorageManager:
                     'is_flagged': is_flagged,
                     'flag_reason': doc.get('flag_reason'),
                     'edited_words_count': edited_words_count,  # Number of words edited
+                    'review_round_edited_words_count': review_round_edited_words_count,  # Number of words edited in review round
                     'remarks': doc.get('remarks'),
                     'review_round': doc.get('review_round', 0),
                     'review_history': doc.get('review_history', [])
