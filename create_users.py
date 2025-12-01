@@ -130,6 +130,13 @@ USERS = [
         'is_admin': False
     },
     {
+        'username': 'tester',
+        'password': 'tester@123',
+        'email': 'tester@phonex.ai',
+        'name': 'Tester',
+        'is_admin': False
+    },
+    {
         'username': 'Annotator',
         'password': 'annotator@123',
         'email': 'annotator@phonex.ai',
