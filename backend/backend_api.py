@@ -1104,6 +1104,178 @@ def get_transcription_by_id(transcription_id):
         }), 500
 
 
+@app.route('/api/files/<transcription_id>/save', methods=['POST'])
+def save_file(transcription_id):
+    """
+    Save file changes with two-stage workflow validation.
+    
+    Stage 1: User A saves → status = "done", review_round = 0
+    Stage 2: User B saves → status = "completed", review_round = 1
+    
+    Headers:
+        - X-User-ID: User ID (required)
+    
+    JSON Body:
+        - transcription_data: Updated transcription data (required)
+    """
+    try:
+        # Get user info from headers
+        user_id, is_admin = get_user_from_request()
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'User ID is required. Please provide X-User-ID header.'
+            }), 400
+        
+        data = request.get_json()
+        if not data or 'transcription_data' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'transcription_data is required'
+            }), 400
+        
+        transcription_data = data['transcription_data']
+        
+        # Get current file document
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        
+        try:
+            obj_id = ObjectId(transcription_id)
+        except (InvalidId, ValueError):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid file ID format'
+            }), 400
+        
+        current_doc = storage_manager.collection.find_one({'_id': obj_id})
+        if not current_doc:
+            return jsonify({
+                'success': False,
+                'error': 'File not found'
+            }), 404
+        
+        # Validation: Check if file is already completed
+        current_status = current_doc.get('manual_status') or 'pending'
+        is_flagged = current_doc.get('is_flagged', False)
+        
+        # Compute current status (same logic as in list_transcriptions)
+        if is_flagged:
+            computed_status = 'flagged'
+        elif current_status in ['done', 'pending', 'flagged', 'completed']:
+            computed_status = current_status
+        elif current_doc.get('assigned_user_id') and current_doc.get('user_id'):
+            if str(current_doc.get('assigned_user_id')) == str(current_doc.get('user_id')):
+                computed_status = 'done'
+            else:
+                computed_status = 'pending'
+        else:
+            computed_status = 'pending'
+        
+        # Check if status is "completed" (the final state)
+        if computed_status == 'completed' or current_status == 'completed':
+            return jsonify({
+                'success': False,
+                'error': 'File is already completed'
+            }), 400
+        
+        # Validation: Check if user is assigned to this file
+        assigned_user_id = current_doc.get('assigned_user_id')
+        if not assigned_user_id or str(assigned_user_id) != str(user_id):
+            return jsonify({
+                'success': False,
+                'error': 'You are not assigned to this file'
+            }), 403
+        
+        # Get current review_round and status
+        review_round = current_doc.get('review_round', 0)
+        review_history = current_doc.get('review_history', [])
+        
+        # Initialize review_round to 0 if not set (old documents)
+        if 'review_round' not in current_doc:
+            review_round = 0
+        
+        # Determine new status based on review_round
+        previous_status = computed_status
+        new_status = None
+        new_review_round = review_round
+        
+        if review_round == 0:
+            # First reviewer: status = "done", review_round stays 0
+            new_status = 'done'
+        elif review_round == 1:
+            # Second reviewer: status = "completed", review_round stays 1
+            new_status = 'completed'
+        else:
+            # Fallback: if review_round is not 0 or 1, treat as first review
+            new_review_round = 0
+            new_status = 'done'
+        
+        # Update transcription data
+        update_result = storage_manager.update_transcription(
+            transcription_id, 
+            transcription_data, 
+            user_id=user_id,
+            status=new_status,
+            review_round=new_review_round
+        )
+        
+        if not update_result['success']:
+            return jsonify({
+                'success': False,
+                'error': update_result.get('error', 'Failed to update transcription')
+            }), 500
+        
+        # Add review history entry
+        review_history_entry = {
+            'round': new_review_round,
+            'user_id': str(user_id),
+            'action': 'save',
+            'previous_status': previous_status,
+            'new_status': new_status,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Update review_history in database (MongoDB will create array if it doesn't exist)
+        storage_manager.collection.update_one(
+            {'_id': obj_id},
+            {
+                '$push': {'review_history': review_history_entry},
+                '$set': {'updated_at': datetime.now(timezone.utc)}
+            }
+        )
+        
+        # Get updated document
+        updated_doc = storage_manager.collection.find_one({'_id': obj_id})
+        updated_doc['_id'] = str(updated_doc['_id'])
+        if 'created_at' in updated_doc and isinstance(updated_doc['created_at'], datetime):
+            updated_doc['created_at'] = updated_doc['created_at'].isoformat()
+        if 'updated_at' in updated_doc and isinstance(updated_doc['updated_at'], datetime):
+            updated_doc['updated_at'] = updated_doc['updated_at'].isoformat()
+        
+        print(f"✅ File saved: {transcription_id} by user {user_id}, status: {new_status}, round: {new_review_round}")
+        
+        return jsonify({
+            'success': True,
+            'message': f'File saved successfully. Status: {new_status}',
+            'document_id': transcription_id,
+            'status': new_status,
+            'review_round': new_review_round,
+            'file': updated_doc
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error saving file: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/transcriptions/<transcription_id>', methods=['PUT'])
 def update_transcription_by_id(transcription_id):
     """
@@ -1285,7 +1457,7 @@ def update_transcription_status(transcription_id):
         - X-Is-Admin: 'true' (required)
     
     JSON Body:
-        - status: String ('done', 'pending', or 'flagged')
+        - status: String ('done', 'pending', 'flagged', or 'completed')
     """
     try:
         # Check if user is admin
@@ -1304,10 +1476,10 @@ def update_transcription_status(transcription_id):
             }), 400
         
         status = data.get('status')
-        if status not in ['done', 'pending', 'flagged']:
+        if status not in ['done', 'pending', 'flagged', 'completed']:
             return jsonify({
                 'success': False,
-                'error': 'status must be one of: done, pending, flagged'
+                'error': 'status must be one of: done, pending, flagged, completed'
             }), 400
         
         result = storage_manager.update_transcription_status(transcription_id, status)
@@ -1485,6 +1657,184 @@ def assign_transcription(transcription_id):
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"❌ Error assigning transcription: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/admin/files/<transcription_id>/reassign', methods=['POST'])
+def reassign_file(transcription_id):
+    """
+    Reassign a file to a different user for second review (admin only).
+    
+    When admin reassigns:
+    - Change assigned_user_id = new_user_id
+    - Set review_round = 1
+    - Status remains "done"
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    JSON Body:
+        - new_user_id: User ID to reassign the file to (required)
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        data = request.get_json()
+        if not data or 'new_user_id' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'new_user_id is required'
+            }), 400
+        
+        new_user_id = data['new_user_id']
+        
+        # Get current file document
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        
+        try:
+            obj_id = ObjectId(transcription_id)
+        except (InvalidId, ValueError):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid file ID format'
+            }), 400
+        
+        current_doc = storage_manager.collection.find_one({'_id': obj_id})
+        if not current_doc:
+            return jsonify({
+                'success': False,
+                'error': 'File not found'
+            }), 404
+        
+        # Validation: Check if status is "completed"
+        current_status = current_doc.get('manual_status') or 'pending'
+        is_flagged = current_doc.get('is_flagged', False)
+        
+        # Compute current status
+        if is_flagged:
+            computed_status = 'flagged'
+        elif current_status in ['done', 'pending', 'flagged', 'completed']:
+            computed_status = current_status
+        elif current_doc.get('assigned_user_id') and current_doc.get('user_id'):
+            if str(current_doc.get('assigned_user_id')) == str(current_doc.get('user_id')):
+                computed_status = 'done'
+            else:
+                computed_status = 'pending'
+        else:
+            computed_status = 'pending'
+        
+        if computed_status == 'completed' or current_status == 'completed':
+            return jsonify({
+                'success': False,
+                'error': 'Cannot reassign completed file'
+            }), 400
+        
+        # Verify user exists
+        if users_collection:
+            from bson import ObjectId as BSONObjectId
+            from bson.errors import InvalidId as BSONInvalidId
+            
+            try:
+                user_obj_id = BSONObjectId(new_user_id)
+                user = users_collection.find_one({'_id': user_obj_id})
+            except (BSONInvalidId, ValueError):
+                user = None
+            
+            if not user:
+                user = users_collection.find_one({'username': new_user_id})
+            
+            if not user:
+                return jsonify({
+                    'success': False,
+                    'error': 'User not found'
+                }), 404
+            
+            new_user_id = str(user['_id'])
+        
+        current_assigned_user_id = current_doc.get('assigned_user_id')
+        
+        # Note: Requirements say admin CAN reassign to the same user, so we don't block it
+        # But we still check if it's the same user and log a warning
+        if current_assigned_user_id and str(current_assigned_user_id) == str(new_user_id):
+            print(f"⚠️  Warning: Reassigning to same user {new_user_id}")
+        
+        # Get review_history
+        review_history = current_doc.get('review_history', [])
+        previous_assigned_user_id = str(current_assigned_user_id) if current_assigned_user_id else None
+        
+        # Update assigned_user_id, review_round = 1, status stays "done"
+        update_result = storage_manager.collection.update_one(
+            {'_id': obj_id},
+            {
+                '$set': {
+                    'assigned_user_id': str(new_user_id),
+                    'review_round': 1,
+                    'updated_at': datetime.now(timezone.utc)
+                }
+            }
+        )
+        
+        if update_result.matched_count == 0:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to reassign file'
+            }), 500
+        
+        # Add review history entry
+        review_history_entry = {
+            'round': 1,
+            'user_id': None,  # Admin action, no specific user
+            'action': 'reassign',
+            'previous_status': computed_status,
+            'new_status': computed_status,  # Status stays the same
+            'previous_assigned_user_id': previous_assigned_user_id,
+            'new_assigned_user_id': str(new_user_id),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Update review_history (MongoDB will create array if it doesn't exist)
+        storage_manager.collection.update_one(
+            {'_id': obj_id},
+            {
+                '$push': {'review_history': review_history_entry}
+            }
+        )
+        
+        # Get updated document
+        updated_doc = storage_manager.collection.find_one({'_id': obj_id})
+        updated_doc['_id'] = str(updated_doc['_id'])
+        if 'created_at' in updated_doc and isinstance(updated_doc['created_at'], datetime):
+            updated_doc['created_at'] = updated_doc['created_at'].isoformat()
+        if 'updated_at' in updated_doc and isinstance(updated_doc['updated_at'], datetime):
+            updated_doc['updated_at'] = updated_doc['updated_at'].isoformat()
+        
+        print(f"✅ File reassigned: {transcription_id} to user {new_user_id}, review_round: 1")
+        
+        return jsonify({
+            'success': True,
+            'message': 'File reassigned successfully for second review',
+            'document_id': transcription_id,
+            'assigned_user_id': str(new_user_id),
+            'review_round': 1,
+            'status': computed_status,  # Status remains "done"
+            'file': updated_doc
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error reassigning file: {str(e)}")
         print(error_trace)
         
         return jsonify({
@@ -1698,6 +2048,205 @@ def delete_transcription_by_id(transcription_id):
         }), 500
 
 
+@app.route('/api/admin/transcriptions/bulk-reassign', methods=['POST'])
+def bulk_reassign_transcriptions():
+    """
+    Bulk reassign transcriptions to a user for second review (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    Body:
+        - transcription_ids: List of transcription IDs to reassign
+        - new_user_id: User ID to reassign the transcriptions to
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'Request body is required'
+            }), 400
+        
+        transcription_ids = data.get('transcription_ids', [])
+        new_user_id = data.get('new_user_id')
+        
+        if not isinstance(transcription_ids, list) or len(transcription_ids) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'transcription_ids must be a non-empty array'
+            }), 400
+        
+        if not new_user_id:
+            return jsonify({
+                'success': False,
+                'error': 'new_user_id is required'
+            }), 400
+        
+        # Verify user exists
+        if users_collection:
+            from bson import ObjectId
+            from bson.errors import InvalidId
+            
+            # Try to find user by ObjectId first
+            try:
+                user_obj_id = ObjectId(new_user_id)
+                user = users_collection.find_one({'_id': user_obj_id})
+            except (InvalidId, ValueError):
+                user = None
+            
+            # If not found by ObjectId, try by username
+            if not user:
+                user = users_collection.find_one({'username': new_user_id})
+            
+            if not user:
+                return jsonify({
+                    'success': False,
+                    'error': f'User not found: {new_user_id}'
+                }), 404
+            
+            new_user_id = str(user['_id'])
+        
+        # Reassign each transcription
+        results = {
+            'successful': [],
+            'failed': []
+        }
+        
+        for transcription_id in transcription_ids:
+            try:
+                from bson import ObjectId
+                from bson.errors import InvalidId
+                
+                try:
+                    obj_id = ObjectId(transcription_id)
+                except (InvalidId, ValueError):
+                    results['failed'].append({
+                        'id': transcription_id,
+                        'error': 'Invalid transcription ID format'
+                    })
+                    continue
+                
+                current_doc = storage_manager.collection.find_one({'_id': obj_id})
+                if not current_doc:
+                    results['failed'].append({
+                        'id': transcription_id,
+                        'error': 'File not found'
+                    })
+                    continue
+                
+                # Validation: Check if status is "completed"
+                current_status = current_doc.get('manual_status') or 'pending'
+                is_flagged = current_doc.get('is_flagged', False)
+                
+                # Compute current status
+                if is_flagged:
+                    computed_status = 'flagged'
+                elif current_status in ['done', 'pending', 'flagged', 'completed']:
+                    computed_status = current_status
+                elif current_doc.get('assigned_user_id') and current_doc.get('user_id'):
+                    if str(current_doc.get('assigned_user_id')) == str(current_doc.get('user_id')):
+                        computed_status = 'done'
+                    else:
+                        computed_status = 'pending'
+                else:
+                    computed_status = 'pending'
+                
+                if computed_status == 'completed' or current_status == 'completed':
+                    results['failed'].append({
+                        'id': transcription_id,
+                        'error': 'Cannot reassign completed file'
+                    })
+                    continue
+                
+                current_assigned_user_id = current_doc.get('assigned_user_id')
+                review_history = current_doc.get('review_history', [])
+                previous_assigned_user_id = str(current_assigned_user_id) if current_assigned_user_id else None
+                
+                # Update assigned_user_id, review_round = 1
+                update_result = storage_manager.collection.update_one(
+                    {'_id': obj_id},
+                    {
+                        '$set': {
+                            'assigned_user_id': str(new_user_id),
+                            'review_round': 1,
+                            'updated_at': datetime.now(timezone.utc)
+                        }
+                    }
+                )
+                
+                if update_result.matched_count == 0:
+                    results['failed'].append({
+                        'id': transcription_id,
+                        'error': 'Failed to reassign file'
+                    })
+                    continue
+                
+                # Add review history entry
+                review_history_entry = {
+                    'round': 1,
+                    'user_id': None,  # Admin action, no specific user
+                    'action': 'reassign',
+                    'previous_status': computed_status,
+                    'new_status': computed_status,  # Status stays the same
+                    'previous_assigned_user_id': previous_assigned_user_id,
+                    'new_assigned_user_id': str(new_user_id),
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                }
+                
+                # Update review_history
+                storage_manager.collection.update_one(
+                    {'_id': obj_id},
+                    {
+                        '$push': {'review_history': review_history_entry}
+                    }
+                )
+                
+                results['successful'].append({
+                    'id': transcription_id,
+                    'message': 'Reassigned successfully for second review'
+                })
+                
+            except Exception as e:
+                results['failed'].append({
+                    'id': transcription_id,
+                    'error': str(e)
+                })
+        
+        total_requested = len(transcription_ids)
+        total_successful = len(results['successful'])
+        total_failed = len(results['failed'])
+        
+        return jsonify({
+            'success': True,
+            'message': f'Bulk reassign completed: {total_successful} successful, {total_failed} failed',
+            'results': results,
+            'summary': {
+                'total_requested': total_requested,
+                'total_successful': total_successful,
+                'total_failed': total_failed
+            }
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error in bulk reassign: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/transcriptions/bulk-delete', methods=['POST'])
 def bulk_delete_transcriptions():
     """
@@ -1786,7 +2335,7 @@ def bulk_delete_transcriptions():
 @app.route('/api/transcriptions/statistics', methods=['GET'])
 def get_transcription_statistics():
     """
-    Get statistics about transcriptions (total, done, pending, flagged counts).
+    Get statistics about transcriptions (total, done, pending, flagged, completed counts).
     Regular users only see statistics for transcriptions assigned to them.
     Admins see statistics for all transcriptions.
     
@@ -2158,17 +2707,29 @@ def download_done_transcriptions():
             audio_path = transcription_data.get('audio_path') or metadata.get('audio_path', '')
             s3_metadata = doc.get('s3_metadata', {})
             
-            # Determine filename
-            if audio_path:
+            # Determine filename - prioritize original filename without timestamp
+            if s3_metadata.get('key'):
+                # S3 key format: audio/{timestamp}_{original_filename}
+                # Extract original filename by removing timestamp prefix
+                s3_key = s3_metadata.get('key', '')
+                s3_filename = s3_key.split('/')[-1] if '/' in s3_key else s3_key
+                
+                # Remove timestamp prefix (format: YYYYMMDD_HHMMSS_)
+                # Timestamp is 15 characters (8 digits + underscore + 6 digits) + underscore = 16 chars
+                if len(s3_filename) > 16 and s3_filename[15] == '_':
+                    # Check if first 8 chars are digits (date) and next 7 chars are underscore + time
+                    if s3_filename[:8].isdigit() and s3_filename[9:15].isdigit():
+                        file_name = s3_filename[16:]  # Remove timestamp prefix
+                    else:
+                        file_name = s3_filename
+                else:
+                    file_name = s3_filename
+            elif audio_path:
                 # Extract filename from audio_path (handle paths like "/api/audio/5143282_audio.mp3")
                 if '/' in audio_path:
                     file_name = audio_path.split('/')[-1]
                 else:
                     file_name = audio_path
-            elif s3_metadata.get('key'):
-                # Use S3 key which contains timestamped filename
-                s3_key = s3_metadata.get('key', '')
-                file_name = s3_key.split('/')[-1] if '/' in s3_key else s3_key
             else:
                 # Fallback to metadata filename or use document ID
                 file_name = metadata.get('filename', f"transcription_{doc_id}")
@@ -2214,7 +2775,7 @@ def download_done_transcriptions():
                     # Get filename for the JSON file
                     file_name = transformed_data.get('file_name', 'transcription')
                     base_name = os.path.splitext(file_name)[0]
-                    json_filename = f"{base_name}_transcription.json"
+                    json_filename = f"{base_name}.json"
                     
                     # Convert to JSON string
                     json_content = json.dumps(transformed_data, ensure_ascii=False, indent=2)
@@ -2252,6 +2813,221 @@ def download_done_transcriptions():
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"❌ Error downloading done transcriptions: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/admin/transcriptions/download-completed', methods=['GET'])
+def download_completed_transcriptions():
+    """
+    Download all transcriptions with status 'completed' as a zip file (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    Returns:
+        ZIP file containing all JSON transcription files for 'completed' transcriptions
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        if not storage_manager.collection:
+            return jsonify({
+                'success': False,
+                'error': 'MongoDB not initialized'
+            }), 500
+        
+        # Query for transcriptions with status 'completed'
+        query_filter = {
+            '$or': [
+                {'manual_status': 'completed'},
+                {'status': 'completed'}
+            ]
+        }
+        
+        # Get all completed transcriptions
+        cursor = storage_manager.collection.find(query_filter)
+        
+        # Create in-memory zip file
+        zip_buffer = BytesIO()
+        
+        def format_timestamp(ts):
+            """
+            Format timestamp to include microseconds (add '000' if not present).
+            Input formats: "0:00:01.037" or "0:00:01.037000"
+            Output format: "0:00:01.037000"
+            """
+            if not ts:
+                return ts
+            # If already has 6 digits after decimal, return as is
+            if '.' in ts:
+                parts = ts.split('.')
+                if len(parts) == 2:
+                    seconds_part = parts[0]
+                    decimal_part = parts[1]
+                    # Pad to 6 digits if needed
+                    if len(decimal_part) < 6:
+                        decimal_part = decimal_part.ljust(6, '0')
+                    return f"{seconds_part}.{decimal_part}"
+            return ts
+        
+        def transform_transcription_data(doc, transcription_data):
+            """
+            Transform transcription_data from current format to required format.
+            
+            Current format:
+            {
+                "words": [{"start": "...", "end": "...", "word": "...", ...}],
+                "language": "...",
+                "audio_path": "...",
+                ...
+            }
+            
+            Required format:
+            {
+                "id": 1763711314101,
+                "file_name": "7235852_audio.mp3",
+                "annotations": [
+                    {
+                        "start": "0:00:01.119000",
+                        "end": "0:00:01.609000",
+                        "Transcription": ["એક"]
+                    },
+                    ...
+                ]
+            }
+            """
+            # Get MongoDB document ID and convert to timestamp (milliseconds since epoch)
+            from bson import ObjectId
+            doc_id = doc.get('_id')
+            if isinstance(doc_id, ObjectId):
+                # ObjectId contains timestamp in first 4 bytes (seconds since epoch)
+                id_timestamp = int(doc_id.generation_time.timestamp() * 1000)  # Convert to milliseconds
+            else:
+                # Fallback: use current timestamp
+                id_timestamp = int(time.time() * 1000)
+            
+            # Get filename from various sources
+            metadata = transcription_data.get('metadata', {})
+            audio_path = transcription_data.get('audio_path') or metadata.get('audio_path', '')
+            s3_metadata = doc.get('s3_metadata', {})
+            
+            # Determine filename - prioritize original filename without timestamp
+            if s3_metadata.get('key'):
+                # S3 key format: audio/{timestamp}_{original_filename}
+                # Extract original filename by removing timestamp prefix
+                s3_key = s3_metadata.get('key', '')
+                s3_filename = s3_key.split('/')[-1] if '/' in s3_key else s3_key
+                
+                # Remove timestamp prefix (format: YYYYMMDD_HHMMSS_)
+                # Timestamp is 15 characters (8 digits + underscore + 6 digits) + underscore = 16 chars
+                if len(s3_filename) > 16 and s3_filename[15] == '_':
+                    # Check if first 8 chars are digits (date) and next 7 chars are underscore + time
+                    if s3_filename[:8].isdigit() and s3_filename[9:15].isdigit():
+                        file_name = s3_filename[16:]  # Remove timestamp prefix
+                    else:
+                        file_name = s3_filename
+                else:
+                    file_name = s3_filename
+            elif audio_path:
+                # Extract filename from audio_path (handle paths like "/api/audio/5143282_audio.mp3")
+                if '/' in audio_path:
+                    file_name = audio_path.split('/')[-1]
+                else:
+                    file_name = audio_path
+            else:
+                # Fallback to metadata filename or use document ID
+                file_name = metadata.get('filename', f"transcription_{doc_id}")
+            
+            # Transform words array to annotations array
+            words = transcription_data.get('words', [])
+            annotations = []
+            
+            for word_obj in words:
+                start = format_timestamp(word_obj.get('start', ''))
+                end = format_timestamp(word_obj.get('end', ''))
+                word_text = word_obj.get('word', '')
+                
+                # Create annotation in required format
+                annotation = {
+                    'start': start,
+                    'end': end,
+                    'Transcription': [word_text]  # Transcription is an array with the word
+                }
+                annotations.append(annotation)
+            
+            # Build the transformed data
+            transformed_data = {
+                'id': id_timestamp,
+                'file_name': file_name,
+                'annotations': annotations
+            }
+            
+            return transformed_data
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            count = 0
+            for doc in cursor:
+                try:
+                    # Get transcription data
+                    transcription_data = doc.get('transcription_data', {})
+                    if not transcription_data:
+                        continue
+                    
+                    # Transform to required format
+                    transformed_data = transform_transcription_data(doc, transcription_data)
+                    
+                    # Get filename for the JSON file
+                    file_name = transformed_data.get('file_name', 'transcription')
+                    base_name = os.path.splitext(file_name)[0]
+                    json_filename = f"{base_name}.json"
+                    
+                    # Convert to JSON string
+                    json_content = json.dumps(transformed_data, ensure_ascii=False, indent=2)
+                    
+                    # Add to zip
+                    zip_file.writestr(json_filename, json_content.encode('utf-8'))
+                    count += 1
+                    
+                except Exception as e:
+                    print(f"⚠️  Error processing transcription {doc.get('_id')}: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    continue
+        
+        if count == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No transcriptions with status "completed" found'
+            }), 404
+        
+        # Prepare zip file for download
+        zip_buffer.seek(0)
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"completed_transcriptions_{timestamp}.zip"
+        
+        print(f"✅ Created zip file with {count} transcription(s): {zip_filename}")
+        
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=zip_filename
+        )
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error downloading completed transcriptions: {str(e)}")
         print(error_trace)
         
         return jsonify({

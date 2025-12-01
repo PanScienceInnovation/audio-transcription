@@ -63,7 +63,7 @@ interface TranscriptionSummary {
   audio_duration: number;
   s3_url: string;
   filename: string;
-  status?: 'done' | 'pending' | 'flagged';
+  status?: 'done' | 'pending' | 'flagged' | 'completed';
   is_flagged?: boolean;
   flag_reason?: string;
 }
@@ -460,8 +460,8 @@ function SavedTranscriptions() {
     setSaving(true);
     try {
       const config = getAxiosConfig();
-      const response = await axios.put(
-        `${API_BASE_URL}/api/transcriptions/${selectedTranscription._id}`,
+      const response = await axios.post(
+        `${API_BASE_URL}/api/files/${selectedTranscription._id}/save`,
         {
           transcription_data: selectedTranscription.transcription_data,
         },
@@ -469,7 +469,15 @@ function SavedTranscriptions() {
       );
 
       if (response.data.success) {
-        alert('Changes saved successfully!');
+        const status = response.data.status || 'done';
+        const reviewRound = response.data.review_round;
+        const message = status === 'completed' 
+          ? 'File completed successfully! This file has passed both review stages.'
+          : reviewRound === 1
+          ? 'File saved! Ready for final review.'
+          : 'Changes saved successfully! File marked as done for first review.';
+        
+        alert(message);
         setHasChanges(false);
         // Refresh the list
         fetchTranscriptions();
@@ -478,7 +486,20 @@ function SavedTranscriptions() {
       }
     } catch (error: any) {
       console.error('Error saving:', error);
-      alert(`Error: ${error.response?.data?.error || error.message}`);
+      const errorMessage = error.response?.data?.error || error.message;
+      
+      // Show user-friendly error messages
+      if (error.response?.status === 403) {
+        alert('Access Denied: You are not assigned to this file. Please contact an administrator.');
+      } else if (error.response?.status === 400) {
+        if (errorMessage.includes('completed')) {
+          alert('Error: This file is already completed and cannot be modified.');
+        } else {
+          alert(`Error: ${errorMessage}`);
+        }
+      } else {
+        alert(`Error saving: ${errorMessage}`);
+      }
     } finally {
       setSaving(false);
     }
@@ -1361,14 +1382,22 @@ function SavedTranscriptions() {
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span
                             className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              transcription.status === 'done'
+                              transcription.status === 'completed'
+                                ? 'bg-purple-100 text-purple-800'
+                                : transcription.status === 'done'
                                 ? 'bg-green-100 text-green-800'
                                 : transcription.status === 'flagged'
                                 ? 'bg-red-100 text-red-800'
                                 : 'bg-yellow-100 text-yellow-800'
                             }`}
                           >
-                            {transcription.status === 'done' ? 'Done' : transcription.status === 'flagged' ? 'Flagged' : 'Pending'}
+                            {transcription.status === 'completed' 
+                              ? 'Completed' 
+                              : transcription.status === 'done' 
+                              ? 'Done' 
+                              : transcription.status === 'flagged' 
+                              ? 'Flagged' 
+                              : 'Pending'}
                           </span>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">

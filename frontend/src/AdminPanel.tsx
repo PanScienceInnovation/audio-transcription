@@ -49,7 +49,18 @@ interface Transcription {
   language: string;
   assigned_user_id?: string;
   user_id?: string;
-  status?: 'done' | 'pending' | 'flagged';
+  status?: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review';
+  review_round?: number;
+  review_history?: Array<{
+    round: number;
+    user_id: string | null;
+    action: string;
+    previous_status: string;
+    new_status: string;
+    timestamp: string;
+    previous_assigned_user_id?: string;
+    new_assigned_user_id?: string;
+  }>;
   edited_words_count?: number;
   total_words?: number;
   transcription_type?: 'words' | 'phrases';
@@ -70,16 +81,19 @@ function AdminPanel() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(20); // 20 items per page
   const [totalItems, setTotalItems] = useState(0); // Total items from backend
-  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, total_done_duration: 0 }); // Statistics from backend
+  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, completed: 0, total_done_duration: 0, total_completed_duration: 0 }); // Statistics from backend
   const [selectedTranscriptions, setSelectedTranscriptions] = useState<Set<string>>(new Set());
   const [bulkAssignUserId, setBulkAssignUserId] = useState<string>('');
   const [bulkAssigning, setBulkAssigning] = useState(false);
+  const [bulkReassignUserId, setBulkReassignUserId] = useState<string>('');
+  const [bulkReassigning, setBulkReassigning] = useState(false);
   const [languageFilter, setLanguageFilter] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [assignedUserFilter, setAssignedUserFilter] = useState<string>('');
   const [flaggedFilter, setFlaggedFilter] = useState<string>('');
   const [downloading, setDownloading] = useState(false);
+  const [downloadingCompleted, setDownloadingCompleted] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [flagging, setFlagging] = useState<string | null>(null);
@@ -201,6 +215,28 @@ function AdminPanel() {
     }
   };
 
+  const handleReassign = async (transcriptionId: string, newUserId: string) => {
+    setAssigning(transcriptionId);
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.post(
+        `${API_BASE_URL}/api/admin/files/${transcriptionId}/reassign`,
+        { new_user_id: newUserId },
+        config
+      );
+
+      if (response.data.success) {
+        setMessage({ type: 'success', text: 'File reassigned successfully for second review' });
+        loadData(); // Reload data
+      }
+    } catch (error: any) {
+      const errorMsg = error.response?.data?.error || 'Failed to reassign file';
+      setMessage({ type: 'error', text: errorMsg });
+    } finally {
+      setAssigning(null);
+    }
+  };
+
   const handleBulkAssign = async () => {
     if (!bulkAssignUserId || selectedTranscriptions.size === 0) {
       setMessage({ type: 'error', text: 'Please select files and a user to assign' });
@@ -237,6 +273,45 @@ function AdminPanel() {
       setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to assign transcriptions' });
     } finally {
       setBulkAssigning(false);
+    }
+  };
+
+  const handleBulkReassign = async () => {
+    if (!bulkReassignUserId || selectedTranscriptions.size === 0) {
+      setMessage({ type: 'error', text: 'Please select files and a user to reassign' });
+      return;
+    }
+
+    setBulkReassigning(true);
+    const selectedIds = Array.from(selectedTranscriptions);
+    console.log(`🔄 Bulk reassigning ${selectedIds.length} transcriptions to user ${bulkReassignUserId}`);
+
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.post(
+        `${API_BASE_URL}/api/admin/transcriptions/bulk-reassign`,
+        {
+          transcription_ids: selectedIds,
+          new_user_id: bulkReassignUserId
+        },
+        config
+      );
+
+      if (response.data.success) {
+        const summary = response.data.summary;
+        const message = `Bulk reassign completed: ${summary.total_successful} successful, ${summary.total_failed} failed`;
+        setMessage({ type: 'success', text: message });
+        setSelectedTranscriptions(new Set()); // Clear selection
+        setBulkReassignUserId(''); // Clear user selection
+        loadData(); // Reload data
+      } else {
+        setMessage({ type: 'error', text: response.data.error || 'Failed to reassign transcriptions' });
+      }
+    } catch (error: any) {
+      console.error('❌ Error in bulk reassignment:', error);
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to reassign transcriptions' });
+    } finally {
+      setBulkReassigning(false);
     }
   };
 
@@ -359,6 +434,54 @@ function AdminPanel() {
     }
   };
 
+  const handleDownloadCompletedTranscriptions = async () => {
+    setDownloadingCompleted(true);
+    try {
+      const config = getAxiosConfig();
+
+      // Make request to download endpoint with responseType: 'blob' for binary data
+      const response = await axios.get(
+        `${API_BASE_URL}/api/admin/transcriptions/download-completed`,
+        {
+          ...config,
+          responseType: 'blob'
+        }
+      );
+
+      // Create a blob URL and trigger download
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+
+      // Get filename from Content-Disposition header or use default
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = 'completed_transcriptions.zip';
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setMessage({ type: 'success', text: 'Download completed successfully' });
+    } catch (error: any) {
+      console.error('❌ Error downloading completed transcriptions:', error);
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to download completed transcriptions';
+      setMessage({ type: 'error', text: errorMessage });
+    } finally {
+      setDownloadingCompleted(false);
+    }
+  };
+
   const handleDeleteTranscription = async (transcriptionId: string) => {
     const confirmed = window.confirm(
       'Are you sure you want to delete this transcription?\n\n' +
@@ -439,7 +562,7 @@ function AdminPanel() {
     }
   };
 
-  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged') => {
+  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review') => {
     setUpdatingStatus(transcriptionId);
     try {
       const config = getAxiosConfig();
@@ -524,6 +647,25 @@ function AdminPanel() {
     if (!userId) return 'Unassigned';
     const user = users.find(u => u._id === userId);
     return user ? user.name || user.username : userId;
+  };
+
+  const getOriginalAssignee = (transcription: Transcription): string | undefined => {
+    // If there's no review_history, current assigned_user_id is the original
+    if (!transcription.review_history || transcription.review_history.length === 0) {
+      return transcription.assigned_user_id;
+    }
+    
+    // Find the first "reassign" action in review_history to get the original assignee
+    const reassignAction = transcription.review_history.find(
+      (entry) => entry.action === 'reassign'
+    );
+    
+    if (reassignAction && reassignAction.previous_assigned_user_id) {
+      return reassignAction.previous_assigned_user_id;
+    }
+    
+    // If no reassign action found, current assigned_user_id is the original
+    return transcription.assigned_user_id;
   };
 
   const handleLoadTranscription = (filename: string) => {
@@ -641,7 +783,7 @@ function AdminPanel() {
               </button>
               <button
                 onClick={handleDownloadDoneTranscriptions}
-                disabled={downloading}
+                disabled={downloading || downloadingCompleted}
                 className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 title="Download all done transcriptions as ZIP"
               >
@@ -654,6 +796,24 @@ function AdminPanel() {
                   <>
                     <Download className="h-5 w-5" />
                     <span className="hidden sm:inline">Download Done Files</span>
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handleDownloadCompletedTranscriptions}
+                disabled={downloadingCompleted || downloading}
+                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Download all completed transcriptions as ZIP"
+              >
+                {downloadingCompleted ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <span className="hidden sm:inline">Downloading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-5 w-5" />
+                    <span className="hidden sm:inline">Download Completed Files</span>
                   </>
                 )}
               </button>
@@ -686,7 +846,7 @@ function AdminPanel() {
 
           {/* Insight Cards */}
           {/* Note: Stats shown are for the current filtered view, not all transcriptions */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
             {/* Total Audio Files Card */}
             <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
               <div className="flex items-center justify-between">
@@ -711,6 +871,21 @@ function AdminPanel() {
                 </div>
                 <div className="bg-green-100 rounded-full p-3">
                   <CheckSquare className="h-8 w-8 text-green-600" />
+                </div>
+              </div>
+            </div>
+
+            {/* Completed Files Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-purple-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Completed Files</p>
+                  <p className="text-3xl font-bold text-gray-800">
+                    {statistics.completed || 0}
+                  </p>
+                </div>
+                <div className="bg-purple-100 rounded-full p-3">
+                  <CheckSquare className="h-8 w-8 text-purple-600" />
                 </div>
               </div>
             </div>
@@ -772,7 +947,9 @@ function AdminPanel() {
                 >
                   <option value="">All Status</option>
                   <option value="done">Done</option>
+                  <option value="completed">Completed</option>
                   <option value="pending">Pending</option>
+                  <option value="assigned_for_review">Assigned for Review</option>
                   <option value="flagged">Flagged</option>
                 </select>
                 <select
@@ -867,7 +1044,7 @@ function AdminPanel() {
                   <select
                     value={bulkAssignUserId}
                     onChange={(e) => setBulkAssignUserId(e.target.value)}
-                    disabled={bulkAssigning || bulkDeleting}
+                    disabled={bulkAssigning || bulkReassigning || bulkDeleting}
                     className="text-sm border border-gray-300 rounded px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
                   >
                     <option value="">Select user to assign...</option>
@@ -879,7 +1056,7 @@ function AdminPanel() {
                   </select>
                   <button
                     onClick={handleBulkAssign}
-                    disabled={!bulkAssignUserId || bulkAssigning || bulkDeleting}
+                    disabled={!bulkAssignUserId || bulkAssigning || bulkReassigning || bulkDeleting}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {bulkAssigning ? (
@@ -894,9 +1071,40 @@ function AdminPanel() {
                       </>
                     )}
                   </button>
+                  <select
+                    value={bulkReassignUserId}
+                    onChange={(e) => setBulkReassignUserId(e.target.value)}
+                    disabled={bulkAssigning || bulkReassigning || bulkDeleting}
+                    className="text-sm border border-gray-300 rounded px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 disabled:opacity-50"
+                  >
+                    <option value="">Select user to reassign...</option>
+                    {users.map((user) => (
+                      <option key={user._id} value={user._id}>
+                        {user.name || user.username}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={handleBulkReassign}
+                    disabled={!bulkReassignUserId || bulkAssigning || bulkReassigning || bulkDeleting}
+                    className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    title="Reassign selected files for second review"
+                  >
+                    {bulkReassigning ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Reassigning...
+                      </>
+                    ) : (
+                      <>
+                        <UserCheck className="h-4 w-4" />
+                        Reassign Selected
+                      </>
+                    )}
+                  </button>
                   <button
                     onClick={handleBulkUnassign}
-                    disabled={bulkAssigning || bulkDeleting}
+                    disabled={bulkAssigning || bulkReassigning || bulkDeleting}
                     className="flex items-center gap-2 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {bulkAssigning ? (
@@ -932,6 +1140,7 @@ function AdminPanel() {
                     onClick={() => {
                       setSelectedTranscriptions(new Set());
                       setBulkAssignUserId('');
+                      setBulkReassignUserId('');
                     }}
                     className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                   >
@@ -977,12 +1186,12 @@ function AdminPanel() {
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Filename
                     </th>
-                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                    {/* <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Language
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Created at
-                    </th>
+                    </th> */}
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Updated at
                     </th>
@@ -993,7 +1202,10 @@ function AdminPanel() {
                       Edited Words
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
-                      Assigned To
+                      Current Assignee
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
+                      Original Assignee
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                       Actions
@@ -1003,7 +1215,7 @@ function AdminPanel() {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {paginatedTranscriptions.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={11} className="px-4 py-8 text-center text-gray-500">
                         {searchTerm ? 'No transcriptions match your search' : 'No transcriptions found'}
                       </td>
                     </tr>
@@ -1037,36 +1249,47 @@ function AdminPanel() {
                             </button>
                           </div>
                         </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                        {/* <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                           {transcription.language}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                           {new Date(transcription.created_at).toLocaleDateString()}
-                        </td>
+                        </td> */}
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                           {transcription.updated_at 
                             ? new Date(transcription.updated_at).toLocaleDateString()
                             : '—'}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
-                          <select
-                            value={transcription.status || 'pending'}
-                            onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged')}
-                            disabled={updatingStatus === transcription._id}
-                            className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
-                              transcription.status === 'done'
-                                ? 'bg-green-100 text-green-800'
-                                : transcription.status === 'flagged'
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-yellow-100 text-yellow-800'
-                            } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
-                          >
-                            <option value="pending">Pending</option>
-                            <option value="done">Done</option>
-                            <option value="flagged">Flagged</option>
-                          </select>
-                          {updatingStatus === transcription._id && (
-                            <Loader2 className="inline-block h-3 w-3 ml-2 animate-spin text-gray-500" />
+                          {transcription.status === 'assigned_for_review' ? (
+                            <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                              Assigned for Review
+                            </span>
+                          ) : (
+                            <>
+                              <select
+                                value={transcription.status || 'pending'}
+                                onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review')}
+                                disabled={updatingStatus === transcription._id}
+                                className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
+                                  transcription.status === 'completed'
+                                    ? 'bg-purple-100 text-purple-800'
+                                    : transcription.status === 'done'
+                                    ? 'bg-green-100 text-green-800'
+                                    : transcription.status === 'flagged'
+                                      ? 'bg-red-100 text-red-800'
+                                      : 'bg-yellow-100 text-yellow-800'
+                                } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              >
+                                <option value="pending">Pending</option>
+                                <option value="done">Done</option>
+                                <option value="completed">Completed</option>
+                                <option value="flagged">Flagged</option>
+                              </select>
+                              {updatingStatus === transcription._id && (
+                                <Loader2 className="inline-block h-3 w-3 ml-2 animate-spin text-gray-500" />
+                              )}
+                            </>
                           )}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
@@ -1085,6 +1308,28 @@ function AdminPanel() {
                           >
                             {getUserName(transcription.assigned_user_id)}
                           </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          {(() => {
+                            const originalAssigneeId = getOriginalAssignee(transcription);
+                            const currentAssigneeId = transcription.assigned_user_id;
+                            const wasReassigned = originalAssigneeId && currentAssigneeId && originalAssigneeId !== currentAssigneeId;
+                            
+                            return (
+                              <span
+                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                  originalAssigneeId
+                                    ? wasReassigned 
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-green-100 text-green-800'
+                                    : 'bg-gray-100 text-gray-800'
+                                }`}
+                                title={wasReassigned ? 'Original assignee (file was reassigned)' : 'Original assignee'}
+                              >
+                                {getUserName(originalAssigneeId)}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
                           <div className="flex items-center gap-2">
@@ -1106,26 +1351,29 @@ function AdminPanel() {
                             >
                               <MessageSquare className="h-4 w-4" />
                             </button>
-                            {/* <select
-                              value={selectedUserId}
-                              onChange={(e) => {
-                                const userId = e.target.value;
-                                setSelectedUserId(userId);
-                                if (userId && !bulkAssigning) {
-                                  // Only trigger individual assignment if not in bulk mode
-                                  handleAssign(transcription._id, userId);
-                                }
-                              }}
-                              disabled={assigning === transcription._id || bulkAssigning}
-                              className="text-sm border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
-                            >
-                              <option value="">Assign to...</option>
-                              {users.map((user) => (
-                                <option key={user._id} value={user._id}>
-                                  {user.name || user.username}
-                                </option>
-                              ))}
-                            </select> */}
+                            {/* Reassign button - show for files with status "done" that can be reassigned for second review */}
+                            {transcription.status === 'done' && transcription.review_round !== 1 && (
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  const newUserId = e.target.value;
+                                  if (newUserId && newUserId !== transcription.assigned_user_id) {
+                                    handleReassign(transcription._id, newUserId);
+                                  }
+                                  e.target.value = ''; // Reset selection
+                                }}
+                                disabled={assigning === transcription._id || bulkAssigning}
+                                className="text-xs border border-blue-300 rounded px-2 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="Reassign for second review"
+                              >
+                                <option value="">Reassign...</option>
+                                {users.filter(user => user._id !== transcription.assigned_user_id).map((user) => (
+                                  <option key={user._id} value={user._id}>
+                                    {user.name || user.username}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
                             {transcription.assigned_user_id && (
                               <button
                                 onClick={() => {

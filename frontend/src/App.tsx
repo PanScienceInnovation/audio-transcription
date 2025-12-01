@@ -77,7 +77,7 @@ interface SavedTranscriptionSummary {
   filename: string;
   user_id?: string;
   assigned_user_id?: string;
-  status?: 'done' | 'pending' | 'flagged';
+  status?: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review';
   is_flagged?: boolean;
   flag_reason?: string;
 }
@@ -144,7 +144,7 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(20); // 20 items per page for table
   const [totalItems, setTotalItems] = useState(0);
-  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0 }); // Statistics from backend
+  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, completed: 0 }); // Statistics from backend
   const [isAddingWord, setIsAddingWord] = useState(false);
   const [newWordValues, setNewWordValues] = useState<{ start: string; end: string; word: string }>({
     start: '',
@@ -488,7 +488,7 @@ function App() {
     }
   };
 
-  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged') => {
+  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review') => {
     setUpdatingStatus(transcriptionId);
     try {
       const config = getAxiosConfig();
@@ -892,25 +892,48 @@ function App() {
 
       // If we have a current transcription ID, update it; otherwise create a new one
       if (currentTranscriptionId) {
-        // Update existing transcription
-        const config = getAxiosConfig();
-        const updateData: any = { transcription_data: transcriptionDataToSave };
-        // Include user_id to mark who saved the changes
-        if (userId) {
-          updateData.user_id = userId;
-        }
-        const response = await axios.put(
-          `${API_BASE_URL}/api/transcriptions/${currentTranscriptionId}`,
-          updateData,
-          config
-        );
+        try {
+          // Update existing transcription using new workflow endpoint
+          const config = getAxiosConfig();
+          const response = await axios.post(
+            `${API_BASE_URL}/api/files/${currentTranscriptionId}/save`,
+            { transcription_data: transcriptionDataToSave },
+            config
+          );
 
-        if (response.data.success) {
-          alert('Changes saved successfully to database!');
-          setHasChanges(false);
-          fetchSavedTranscriptions(); // Refresh the saved transcriptions list
-        } else {
-          alert(`Error: ${response.data.error}`);
+          if (response.data.success) {
+            const status = response.data.status || 'done';
+            const reviewRound = response.data.review_round;
+            const message = status === 'completed' 
+              ? 'File completed successfully! This file has passed both review stages.'
+              : reviewRound === 1
+              ? 'File saved! Ready for final review.'
+              : 'Changes saved successfully! File marked as done for first review.';
+            
+            alert(message);
+            setHasChanges(false);
+            fetchSavedTranscriptions(); // Refresh the saved transcriptions list
+          } else {
+            alert(`Error: ${response.data.error}`);
+          }
+        } catch (error: any) {
+          console.error('Error saving file:', error);
+          const errorMessage = error.response?.data?.error || error.message;
+          
+          // Show user-friendly error messages
+          if (error.response?.status === 403) {
+            alert('Access Denied: You are not assigned to this file. Please contact an administrator.');
+          } else if (error.response?.status === 400) {
+            if (errorMessage.includes('completed')) {
+              alert('Error: This file is already completed and cannot be modified.');
+            } else {
+              alert(`Error: ${errorMessage}`);
+            }
+          } else {
+            alert(`Error saving: ${errorMessage}`);
+          }
+        } finally {
+          setSavingToDatabase(false);
         }
       } else {
         // Create new transcription (user_id is optional)
@@ -1246,7 +1269,7 @@ function App() {
         <div className="max-w-7xl mx-auto mb-4">
           {/* Insight Cards */}
           {!transcriptionData && (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
               {/* Total Audio Files Card */}
               <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
                 <div className="flex items-center justify-between">
@@ -1271,6 +1294,21 @@ function App() {
                   </div>
                   <div className="bg-green-100 rounded-full p-3">
                     <Check className="h-8 w-8 text-green-600" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Completed Files Card */}
+              <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-purple-500">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 mb-1">Completed Files</p>
+                    <p className="text-3xl font-bold text-gray-800">
+                      {statistics.completed || 0}
+                    </p>
+                  </div>
+                  <div className="bg-purple-100 rounded-full p-3">
+                    <Check className="h-8 w-8 text-purple-600" />
                   </div>
                 </div>
               </div>
@@ -1399,7 +1437,7 @@ function App() {
                             Status
                           </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
-                            Created Date
+                            Created At
                           </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider pointer-events-none">
                             Updated At
@@ -1430,33 +1468,54 @@ function App() {
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
                                 {getUserInfo().isAdmin ? (
-                                  <select
-                                    value={transcription.status || 'pending'}
-                                    onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged')}
-                                    disabled={updatingStatus === transcription._id}
-                                    className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
-                                      transcription.status === 'done'
-                                        ? 'bg-green-100 text-green-800'
-                                        : transcription.status === 'flagged'
-                                        ? 'bg-red-100 text-red-800'
-                                        : 'bg-yellow-100 text-yellow-800'
-                                    } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
-                                  >
-                                    <option value="pending">Pending</option>
-                                    <option value="done">Done</option>
-                                    <option value="flagged">Flagged</option>
-                                  </select>
+                                  transcription.status === 'assigned_for_review' ? (
+                                    <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                      Assigned for Review
+                                    </span>
+                                  ) : (
+                                    <select
+                                      value={transcription.status || 'pending'}
+                                      onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review')}
+                                      disabled={updatingStatus === transcription._id}
+                                      className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
+                                        transcription.status === 'completed'
+                                          ? 'bg-purple-100 text-purple-800'
+                                          : transcription.status === 'done'
+                                          ? 'bg-green-100 text-green-800'
+                                          : transcription.status === 'flagged'
+                                          ? 'bg-red-100 text-red-800'
+                                          : 'bg-yellow-100 text-yellow-800'
+                                      } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    >
+                                      <option value="pending">Pending</option>
+                                      <option value="done">Done</option>
+                                      <option value="completed">Completed</option>
+                                      <option value="flagged">Flagged</option>
+                                    </select>
+                                  )
                                 ) : (
                                   <span
                                     className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                      transcription.status === 'done'
+                                      transcription.status === 'completed'
+                                        ? 'bg-purple-100 text-purple-800'
+                                        : transcription.status === 'done'
                                         ? 'bg-green-100 text-green-800'
+                                        : transcription.status === 'assigned_for_review'
+                                        ? 'bg-blue-100 text-blue-800'
                                         : transcription.status === 'flagged'
                                         ? 'bg-red-100 text-red-800'
                                         : 'bg-yellow-100 text-yellow-800'
                                     }`}
                                   >
-                                    {transcription.status === 'done' ? 'Done' : transcription.status === 'flagged' ? 'Flagged' : 'Pending'}
+                                    {transcription.status === 'completed' 
+                                      ? 'Completed' 
+                                      : transcription.status === 'done' 
+                                      ? 'Done' 
+                                      : transcription.status === 'assigned_for_review'
+                                      ? 'Assigned for Review'
+                                      : transcription.status === 'flagged' 
+                                      ? 'Flagged' 
+                                      : 'Pending'}
                                   </span>
                                 )}
                                 {updatingStatus === transcription._id && (
