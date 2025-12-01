@@ -642,15 +642,35 @@ class StorageManager:
                     'error': f'Invalid transcription ID format: {str(e)}'
                 }
             
+            # Get current document to check current status
+            current_doc = self.collection.find_one({'_id': obj_id})
+            if not current_doc:
+                return {
+                    'success': False,
+                    'error': 'Transcription not found'
+                }
+            
+            # Prepare update data
+            update_fields = {
+                'manual_status': status,
+                'updated_at': datetime.now(timezone.utc)
+            }
+            
+            # Set done_at or completed_at timestamp only if transitioning to that status for the first time
+            current_manual_status = current_doc.get('manual_status')
+            if status == 'done' and current_manual_status != 'done':
+                # Only set done_at if not already set (first time marking as done)
+                if not current_doc.get('done_at'):
+                    update_fields['done_at'] = datetime.now(timezone.utc)
+            elif status == 'completed' and current_manual_status != 'completed':
+                # Only set completed_at if not already set (first time marking as completed)
+                if not current_doc.get('completed_at'):
+                    update_fields['completed_at'] = datetime.now(timezone.utc)
+            
             # Update the manual_status field (admin override)
             update_result = self.collection.update_one(
                 {'_id': obj_id},
-                {
-                    '$set': {
-                        'manual_status': status,
-                        'updated_at': datetime.now(timezone.utc)
-                    }
-                }
+                {'$set': update_fields}
             )
             
             if update_result.matched_count == 0:
@@ -802,25 +822,62 @@ class StorageManager:
                 additional_filters.append({'transcription_data.language': language})
             
             # Date filter
-            # If status is 'done' or 'completed', filter by updated_at (when it was marked as done/completed)
-            # Otherwise, filter by created_at (when it was created)
+            # Use done_at for done files, completed_at for completed files, created_at for others
             if date:
                 try:
-                    from datetime import datetime, timezone
+                    from datetime import datetime, timezone, timedelta
                     # Parse date string (YYYY-MM-DD)
                     date_obj = datetime.strptime(date, '%Y-%m-%d')
-                    # Create date range for the entire day
-                    start_of_day = datetime.combine(date_obj.date(), datetime.min.time()).replace(tzinfo=timezone.utc)
-                    end_of_day = datetime.combine(date_obj.date(), datetime.max.time()).replace(tzinfo=timezone.utc)
                     
-                    # Use updated_at for done/completed status, created_at for others
-                    date_field = 'updated_at' if status in ['done', 'completed'] else 'created_at'
-                    additional_filters.append({
-                        date_field: {
-                            '$gte': start_of_day,
-                            '$lte': end_of_day
-                        }
-                    })
+                    # Create date range for the entire day in IST (UTC+5:30)
+                    # IST is 5 hours 30 minutes ahead of UTC
+                    # So to get the UTC equivalent of IST midnight, subtract 5:30
+                    ist_offset = timedelta(hours=5, minutes=30)
+                    
+                    # Start of day in IST = midnight IST = previous day 18:30 UTC
+                    start_of_day_ist = datetime.combine(date_obj.date(), datetime.min.time())
+                    start_of_day_utc = (start_of_day_ist - ist_offset).replace(tzinfo=timezone.utc)
+                    
+                    # End of day in IST = 23:59:59 IST = same day 18:29:59 UTC
+                    end_of_day_ist = datetime.combine(date_obj.date(), datetime.max.time())
+                    end_of_day_utc = (end_of_day_ist - ist_offset).replace(tzinfo=timezone.utc)
+                    
+                    # Choose the appropriate date field based on status
+                    # done_at: when file was first marked as done
+                    # completed_at: when file was first marked as completed
+                    # For files without done_at/completed_at (legacy), fall back to updated_at
+                    if status == 'done':
+                        # Filter by done_at if exists, otherwise fall back to updated_at
+                        additional_filters.append({
+                            '$or': [
+                                {'done_at': {'$gte': start_of_day_utc, '$lte': end_of_day_utc}},
+                                # Fallback for legacy files without done_at
+                                {'$and': [
+                                    {'done_at': {'$exists': False}},
+                                    {'updated_at': {'$gte': start_of_day_utc, '$lte': end_of_day_utc}}
+                                ]}
+                            ]
+                        })
+                    elif status == 'completed':
+                        # Filter by completed_at if exists, otherwise fall back to updated_at
+                        additional_filters.append({
+                            '$or': [
+                                {'completed_at': {'$gte': start_of_day_utc, '$lte': end_of_day_utc}},
+                                # Fallback for legacy files without completed_at
+                                {'$and': [
+                                    {'completed_at': {'$exists': False}},
+                                    {'updated_at': {'$gte': start_of_day_utc, '$lte': end_of_day_utc}}
+                                ]}
+                            ]
+                        })
+                    else:
+                        # For other statuses, filter by created_at
+                        additional_filters.append({
+                            'created_at': {
+                                '$gte': start_of_day_utc,
+                                '$lte': end_of_day_utc
+                            }
+                        })
                 except ValueError:
                     print(f"⚠️  Invalid date format: {date}, ignoring date filter")
             
@@ -835,19 +892,21 @@ class StorageManager:
                         ]
                     })
                 elif status == 'done':
-                    # Done if NOT flagged AND (manual_status='done' OR (manual_status unset/invalid AND assigned==user))
+                    # Done if NOT flagged AND NOT completed AND (manual_status='done' OR (manual_status unset/invalid AND assigned==user))
                     additional_filters.append({
                         '$and': [
                             # Not flagged
                             {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
                             {'manual_status': {'$ne': 'flagged'}},
+                            # Not completed
+                            {'manual_status': {'$ne': 'completed'}},
                             # Done condition
                             {'$or': [
                                 {'manual_status': 'done'},
                                 {
                                     '$and': [
-                                        # manual_status not active (not done/pending/flagged)
-                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged']}},
+                                        # manual_status not active (not done/pending/flagged/completed)
+                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed']}},
                                         {'assigned_user_id': {'$ne': None}},
                                         {'user_id': {'$ne': None}},
                                         {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
@@ -857,18 +916,20 @@ class StorageManager:
                         ]
                     })
                 elif status == 'pending':
-                    # Pending if NOT flagged AND NOT done
+                    # Pending if NOT flagged AND NOT done AND NOT completed
                     additional_filters.append({
                         '$and': [
                             # Not flagged
                             {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
                             {'manual_status': {'$ne': 'flagged'}},
+                            # Not completed
+                            {'manual_status': {'$ne': 'completed'}},
                             # Not done condition
                             {'$nor': [
                                 {'manual_status': 'done'},
                                 {
                                     '$and': [
-                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged']}},
+                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed']}},
                                         {'assigned_user_id': {'$ne': None}},
                                         {'user_id': {'$ne': None}},
                                         {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
@@ -937,6 +998,8 @@ class StorageManager:
                 '_id': 1,
                 'created_at': 1,
                 'updated_at': 1,
+                'done_at': 1,  # When file was first marked as done
+                'completed_at': 1,  # When file was first marked as completed
                 'user_id': 1,
                 'assigned_user_id': 1,
                 'is_flagged': 1,
@@ -1506,10 +1569,19 @@ class StorageManager:
             # Note: If file is flagged, the status computation will still show "flagged" 
             # because flagged status has higher priority than manual_status
             # But we set manual_status so that when unflagged, it will show the correct status
-            if status:
-                update_data['manual_status'] = status
-            else:
-                update_data['manual_status'] = 'done'
+            new_status = status if status else 'done'
+            update_data['manual_status'] = new_status
+            
+            # Set done_at or completed_at timestamp only if transitioning to that status for the first time
+            current_manual_status = current_doc.get('manual_status')
+            if new_status == 'done' and current_manual_status != 'done':
+                # Only set done_at if not already set (first time marking as done)
+                if not current_doc.get('done_at'):
+                    update_data['done_at'] = datetime.now(timezone.utc)
+            elif new_status == 'completed' and current_manual_status != 'completed':
+                # Only set completed_at if not already set (first time marking as completed)
+                if not current_doc.get('completed_at'):
+                    update_data['completed_at'] = datetime.now(timezone.utc)
             
             # Set review_round if provided
             if review_round is not None:
