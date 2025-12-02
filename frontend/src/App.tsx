@@ -1303,7 +1303,7 @@ function App() {
               <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-green-500">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-gray-600 mb-1">Files Annotated</p>
+                    <p className="text-sm font-medium text-gray-600 mb-1">Done Files</p>
                     <p className="text-3xl font-bold text-gray-800">
                       {statistics.done}
                     </p>

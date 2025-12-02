@@ -2539,6 +2539,7 @@ def get_team_stats():
             # Calculate statistics
             assigned_files = len(user_transcriptions)
             annotated_files = len([t for t in user_transcriptions if t.get('status') == 'done'])
+            completed_files = len([t for t in user_transcriptions if t.get('status') == 'completed'])
             flagged_files = len([t for t in user_transcriptions if t.get('is_flagged') == True])
             pending_files = len([t for t in user_transcriptions if t.get('status') == 'pending' or not t.get('status')])
             
@@ -2546,6 +2547,7 @@ def get_team_stats():
                 'user': user,
                 'assignedFiles': assigned_files,
                 'annotatedFiles': annotated_files,
+                'completedFiles': completed_files,
                 'flaggedFiles': flagged_files,
                 'pendingFiles': pending_files
             })
@@ -2566,6 +2568,7 @@ def get_team_stats():
         total_team_members = len(user_stats)
         total_assigned_files = sum(stat['assignedFiles'] for stat in user_stats)
         total_annotated_files = sum(stat['annotatedFiles'] for stat in user_stats)
+        total_completed_files = sum(stat['completedFiles'] for stat in user_stats)
         total_flagged_files = sum(stat['flaggedFiles'] for stat in user_stats)
         
         return jsonify({
@@ -2576,6 +2579,7 @@ def get_team_stats():
                     'totalTeamMembers': total_team_members,
                     'totalAssignedFiles': total_assigned_files,
                     'totalAnnotatedFiles': total_annotated_files,
+                    'totalCompletedFiles': total_completed_files,
                     'totalFlaggedFiles': total_flagged_files
                 }
             }
