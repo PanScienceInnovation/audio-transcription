@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit, ChevronLeft, ChevronRight, Search, FolderOpen, Flag, History } from 'lucide-react';
+import { Database, Play, Save, Edit2, Check, X, Loader2, ArrowLeft, Download, Trash2, Edit, ChevronLeft, ChevronRight, Search, FolderOpen, Flag, History, RefreshCw } from 'lucide-react';
 import AudioWaveformPlayer, { AudioWaveformPlayerHandle } from './components/AudioWaveformPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
@@ -65,7 +65,11 @@ interface TranscriptionSummary {
   filename: string;
   status?: 'done' | 'pending' | 'flagged' | 'completed';
   is_flagged?: boolean;
+  is_double_flagged?: boolean;
   flag_reason?: string;
+  has_been_reprocessed?: boolean;
+  reprocessed_document_id?: string;
+  reprocessed_at?: string;
 }
 
 interface TranscriptionDocument {
@@ -142,6 +146,7 @@ function SavedTranscriptions() {
   const [versionHistory, setVersionHistory] = useState<any[]>([]);
   const [loadingVersionHistory, setLoadingVersionHistory] = useState(false);
   const [clearingVersionHistory, setClearingVersionHistory] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
 
   const playerRef = useRef<AudioWaveformPlayerHandle | null>(null);
 
@@ -622,7 +627,7 @@ function SavedTranscriptions() {
     }
   };
 
-  const handleFlagTranscription = async (transcriptionId: string, currentFlagged: boolean, reason?: string) => {
+  const handleFlagTranscription = async (transcriptionId: string, currentFlagged: boolean, reason?: string, isDoubleFlagged?: boolean) => {
     setFlagging(transcriptionId);
     setShowFlagDropdown(null);
     try {
@@ -635,7 +640,8 @@ function SavedTranscriptions() {
         `${API_BASE_URL}/api/transcriptions/${transcriptionId}/flag`,
         { 
           is_flagged: newFlaggedState,
-          flag_reason: newFlaggedState ? reason : null
+          flag_reason: newFlaggedState ? reason : null,
+          is_double_flagged: isDoubleFlagged || false
         },
         config
       );
@@ -760,6 +766,79 @@ function SavedTranscriptions() {
     }
   };
 
+  const reprocessTranscription = async (id: string) => {
+    const confirmed = window.confirm(
+      'Are you sure you want to reprocess this transcription?\n\n' +
+      'This will:\n' +
+      '• Download the audio file from storage\n' +
+      '• Run the transcription process again\n' +
+      '• Save new transcription to reprocessed_files collection\n' +
+      '• Keep the original file flagged for review\n\n' +
+      'This may take a few minutes depending on the audio file size.'
+    );
+    
+    if (!confirmed) {
+      return;
+    }
+
+    setReprocessing(true);
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.post(
+        `${API_BASE_URL}/api/transcriptions/${id}/reprocess`,
+        {},
+        config
+      );
+
+      if (response.data.success) {
+        // Immediately update the local state to mark as reprocessed
+        const updateTranscriptions = (prev: any[]) => 
+          prev.map(t => 
+            t._id === id 
+              ? { ...t, has_been_reprocessed: true, reprocessed_document_id: response.data.reprocessed_document_id } as any
+              : t
+          );
+        
+        setAllTranscriptions(updateTranscriptions);
+        setTranscriptions(updateTranscriptions);
+        
+        // Update selected transcription if viewing it
+        if (selectedTranscription && selectedTranscription._id === id) {
+          setSelectedTranscription(prev => prev ? { ...prev, has_been_reprocessed: true, reprocessed_document_id: response.data.reprocessed_document_id } as any : null);
+        }
+        
+        alert('Transcription reprocessed successfully!\n\nThe new version is saved in reprocessed_files collection.\nUse "Double Flag" if issues persist.');
+        
+        // Refresh transcription details if viewing it (to get the updated flag badge)
+        if (selectedTranscription && selectedTranscription._id === id) {
+          // Wait a bit for backend to save
+          setTimeout(async () => {
+            await fetchTranscriptionDetails(id);
+          }, 1500);
+        }
+        
+        // No immediate list refresh - local state is already updated with has_been_reprocessed
+        // User can manually refresh if needed
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error reprocessing transcription:', error);
+      console.log('Error response data:', error.response?.data);
+      const errorData = error.response?.data;
+      const errorMessage = errorData?.error || error.message;
+      
+      if (errorData?.already_reprocessed) {
+        console.log('File already reprocessed, showing message');
+        alert(`Already Reprocessed\n\n${errorMessage}\n\nUse the "Double Flag" button to flag persistent issues.`);
+      } else {
+        alert(`Error reprocessing: ${errorMessage}`);
+      }
+    } finally {
+      setReprocessing(false);
+    }
+  };
+
   const getWordClassName = (index: number): string => {
     let classes = 'inline-block px-3 py-2 m-1 rounded border-2 cursor-pointer transition-all duration-200 hover:shadow-lg';
 
@@ -857,12 +936,19 @@ function SavedTranscriptions() {
                           Actually, in storage.py it's at root level. We need to access it from selectedTranscription directly.
                           Wait, selectedTranscription is TranscriptionDocument type. I need to update the interface.
                       */}
-                      {(selectedTranscription as any).is_flagged && (
-                        <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800 border border-red-200">
-                          <Flag className="h-4 w-4 mr-1 fill-current" />
-                          Flagged: {(selectedTranscription as any).flag_reason || 'No reason provided'}
-                        </span>
-                      )}
+                      {(selectedTranscription as any).is_flagged && (() => {
+                        const isDoubleFlagged = (selectedTranscription as any).is_double_flagged || false;
+                        return (
+                          <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium border ${
+                            isDoubleFlagged 
+                              ? 'bg-orange-100 text-orange-900 border-orange-300' 
+                              : 'bg-red-100 text-red-800 border-red-200'
+                          }`}>
+                            <Flag className="h-4 w-4 mr-1 fill-current" />
+                            {isDoubleFlagged ? 'Double Flagged' : 'Flagged'}: {(selectedTranscription as any).flag_reason || 'No reason provided'}
+                          </span>
+                        );
+                      })()}
                     </div>
                   </div>
                 )}
@@ -883,6 +969,25 @@ function SavedTranscriptions() {
                       <>
                         <Save className="h-4 w-4 mr-2" />
                         Save Changes
+                      </>
+                    )}
+                  </button>
+                )}
+                {(selectedTranscription as any).is_flagged && !(selectedTranscription as any).has_been_reprocessed && (
+                  <button
+                    onClick={() => selectedTranscription && reprocessTranscription(selectedTranscription._id)}
+                    disabled={reprocessing}
+                    className="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
+                  >
+                    {reprocessing ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Reprocessing...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Reprocess
                       </>
                     )}
                   </button>
@@ -915,9 +1020,14 @@ function SavedTranscriptions() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      if ((selectedTranscription as any).is_flagged) {
+                      const isFlagged = (selectedTranscription as any).is_flagged || false;
+                      const hasBeenReprocessed = (selectedTranscription as any).has_been_reprocessed || false;
+                      
+                      if (isFlagged && !hasBeenReprocessed) {
+                        // Regular flagged file - unflag it
                         handleFlagTranscription(selectedTranscription._id, true);
                       } else {
+                        // Not flagged OR flagged+reprocessed - show dropdown
                         if (showFlagDropdown === selectedTranscription._id) {
                           setShowFlagDropdown(null);
                         } else {
@@ -932,18 +1042,49 @@ function SavedTranscriptions() {
                     }}
                     disabled={flagging === selectedTranscription._id}
                     className={`font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-2 ${
-                      (selectedTranscription as any).is_flagged
-                        ? 'bg-red-100 text-red-600 hover:bg-red-200 border border-red-200'
-                        : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'
+                      (() => {
+                        const isFlagged = (selectedTranscription as any).is_flagged || false;
+                        const hasBeenReprocessed = (selectedTranscription as any).has_been_reprocessed || false;
+                        
+                        if (isFlagged && hasBeenReprocessed) {
+                          return 'bg-orange-100 text-orange-600 hover:bg-orange-200 border border-orange-200';
+                        } else if (isFlagged) {
+                          return 'bg-red-100 text-red-600 hover:bg-red-200 border border-red-200';
+                        } else {
+                          return 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300';
+                        }
+                      })()
                     }`}
-                    title={(selectedTranscription as any).is_flagged ? "Unflag transcription" : "Flag transcription"}
+                    title={(() => {
+                      const isFlagged = (selectedTranscription as any).is_flagged || false;
+                      const hasBeenReprocessed = (selectedTranscription as any).has_been_reprocessed || false;
+                      
+                      if (isFlagged && hasBeenReprocessed) {
+                        return "Double flag this transcription";
+                      } else if (isFlagged) {
+                        return "Unflag transcription";
+                      } else {
+                        return "Flag transcription";
+                      }
+                    })()}
                   >
                     {flagging === selectedTranscription._id ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Flag className={`h-4 w-4 ${(selectedTranscription as any).is_flagged ? 'fill-current' : ''}`} />
                     )}
-                    {(selectedTranscription as any).is_flagged ? 'Flagged' : 'Flag'}
+                    {(() => {
+                      const isFlagged = (selectedTranscription as any).is_flagged || false;
+                      const hasBeenReprocessed = (selectedTranscription as any).has_been_reprocessed || false;
+                      
+                      if (isFlagged && hasBeenReprocessed) {
+                        return 'Double Flag';
+                      } else if (isFlagged) {
+                        return 'Flagged';
+                      } else {
+                        return 'Flag';
+                      }
+                    })()}
                   </button>
                 </div>
                 {getUserInfo().isAdmin && (
@@ -1376,17 +1517,29 @@ function SavedTranscriptions() {
                           {serialNumber}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center">
-                            <Database className="h-5 w-5 text-gray-400 mr-2" />
+                          <div className="flex items-center gap-2">
+                            <Database className="h-5 w-5 text-gray-400" />
                             <span className="text-sm font-medium text-gray-900">
                               {transcription.filename || 'Untitled'}
                             </span>
+                            {(transcription as any).is_double_flagged && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-300">
+                                ⚠️ Double Flagged
+                              </span>
+                            )}
+                            {(transcription as any).has_been_reprocessed && !(transcription as any).is_double_flagged && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                                🔄 Reprocessed
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <span
                             className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                              transcription.status === 'completed'
+                              (transcription as any).is_double_flagged
+                                ? 'bg-orange-100 text-orange-900 border border-orange-300'
+                                : transcription.status === 'completed'
                                 ? 'bg-purple-100 text-purple-800'
                                 : transcription.status === 'done'
                                 ? 'bg-green-100 text-green-800'
@@ -1395,7 +1548,9 @@ function SavedTranscriptions() {
                                 : 'bg-yellow-100 text-yellow-800'
                             }`}
                           >
-                            {transcription.status === 'completed' 
+                            {(transcription as any).is_double_flagged
+                              ? 'Double Flagged'
+                              : transcription.status === 'completed' 
                               ? 'Completed' 
                               : transcription.status === 'done' 
                               ? 'Done' 
@@ -1555,42 +1710,52 @@ function SavedTranscriptions() {
       </div>
 
       {/* Fixed Flag Dropdown */}
-      {showFlagDropdown && dropdownPosition && (
-        <>
-          <div className="fixed inset-0 z-[100]" onClick={() => setShowFlagDropdown(null)}></div>
-          <div
-            className="fixed w-64 bg-white rounded-lg shadow-xl border border-gray-200 z-[101] overflow-hidden"
-            style={{
-              top: dropdownPosition.top,
-              right: dropdownPosition.right,
-            }}
-          >
-            <div className="p-2 border-b border-gray-100 bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-              Select Reason
+      {showFlagDropdown && dropdownPosition && (() => {
+        const transcription = allTranscriptions.find(t => t._id === showFlagDropdown);
+        const hasBeenReprocessed = (transcription as any)?.has_been_reprocessed || false;
+        
+        return (
+          <>
+            <div className="fixed inset-0 z-[100]" onClick={() => setShowFlagDropdown(null)}></div>
+            <div
+              className="fixed w-64 bg-white rounded-lg shadow-xl border border-gray-200 z-[101] overflow-hidden"
+              style={{
+                top: dropdownPosition.top,
+                right: dropdownPosition.right,
+              }}
+            >
+              <div className="p-2 border-b border-gray-100 bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                {hasBeenReprocessed ? 'Double Flag Reason' : 'Select Reason'}
+              </div>
+              {hasBeenReprocessed && (
+                <div className="px-4 py-2 text-xs text-orange-600 bg-orange-50 border-b border-orange-100">
+                  ⚠️ This file has been reprocessed. Double flagging indicates persistent issues.
+                </div>
+              )}
+              <div className="py-1">
+                {[
+                  "Transcribed Word not seperated",
+                  "Transcribed words repeated",
+                  "Missing transcribed words",
+                  "Audio file not found",
+                  "Transcription not found"
+                ].map((reason) => (
+                  <button
+                    key={reason}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleFlagTranscription(showFlagDropdown, false, reason, hasBeenReprocessed);
+                    }}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 hover:text-gray-900"
+                  >
+                    {reason}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="py-1">
-              {[
-                "Transcribed Word not seperated",
-                "Transcribed words repeated",
-                "Missing transcribed words",
-                "Audio file not found",
-                "Transcription not found"
-              ].map((reason) => (
-                <button
-                  key={reason}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleFlagTranscription(showFlagDropdown, false, reason);
-                  }}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 hover:text-gray-900"
-                >
-                  {reason}
-                </button>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
+          </>
+        );
+      })()}
 
       {/* Version History Modal */}
       {showVersionHistory && selectedTranscription && (

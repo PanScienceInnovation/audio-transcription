@@ -64,25 +64,55 @@ class StorageManager:
             # Create version history collection
             self.version_history_collection = self.db['transcription_version_history']
             
+            # Create reprocessed files collection
+            self.reprocessed_collection = self.db['reprocessed_files']
+            
             # Create indexes for better query performance
             try:
+                # Basic indexes
                 self.collection.create_index('created_at')
+                self.collection.create_index('updated_at')
                 self.collection.create_index('user_id')
                 self.collection.create_index('assigned_user_id')  # Index for filtering by assigned user
-                self.collection.create_index([('user_id', 1), ('created_at', -1)])  # Compound index
-                self.collection.create_index([('assigned_user_id', 1), ('created_at', -1)])  # Compound index for assigned user queries
+                
+                # Flag and reprocess indexes
+                self.collection.create_index('is_flagged')
+                self.collection.create_index('is_double_flagged')
+                self.collection.create_index('has_been_reprocessed')
+                self.collection.create_index('manual_status')
+                
+                # Compound indexes for common query patterns
+                self.collection.create_index([('user_id', 1), ('created_at', -1)])  # User's transcriptions by date
+                self.collection.create_index([('assigned_user_id', 1), ('created_at', -1)])  # Assigned user queries
+                self.collection.create_index([('is_flagged', 1), ('created_at', -1)])  # Flagged files by date
+                self.collection.create_index([('is_double_flagged', 1), ('created_at', -1)])  # Double flagged by date
+                self.collection.create_index([('has_been_reprocessed', 1), ('created_at', -1)])  # Reprocessed by date
+                self.collection.create_index([('manual_status', 1), ('created_at', -1)])  # Status queries
+                self.collection.create_index([('transcription_data.language', 1)])  # Language filter
+                self.collection.create_index([('transcription_data.transcription_type', 1)])  # Type filter
                 
                 # Create indexes for version history collection
                 self.version_history_collection.create_index('transcription_id')
                 self.version_history_collection.create_index([('transcription_id', 1), ('timestamp', -1)])  # Compound index for efficient queries
-                print(f"✅ Created indexes on 'created_at', 'user_id', and 'assigned_user_id' fields")
+                
+                # Create indexes for reprocessed files collection
+                self.reprocessed_collection.create_index('created_at')
+                self.reprocessed_collection.create_index('original_transcription_id')
+                self.reprocessed_collection.create_index([('original_transcription_id', 1), ('created_at', -1)])
+                
+                print(f"✅ Created indexes on all key fields for fast queries")
+                print(f"   Main collection: created_at, user_id, assigned_user_id, is_flagged, is_double_flagged, has_been_reprocessed, manual_status + compound indexes")
+                print(f"   Version history: transcription_id + compound indexes")
+                print(f"   Reprocessed files: created_at, original_transcription_id + compound indexes")
             except Exception as e:
                 # Index might already exist, which is fine
+                print(f"⚠️  Note: Some indexes may already exist (this is normal): {str(e)}")
                 pass
             
             print(f"✅ Connected to MongoDB: {self.mongodb_database}")
             print(f"   Collection: {self.mongodb_collection}")
             print(f"   Version History Collection: transcription_version_history")
+            print(f"   Reprocessed Files Collection: reprocessed_files")
             print(f"   Existing collections: {collections if collections else 'None (will be created on first insert)'}")
             
         except Exception as e:
@@ -91,6 +121,7 @@ class StorageManager:
             self.db = None
             self.collection = None
             self.version_history_collection = None
+            self.reprocessed_collection = None
     
     def _get_content_type(self, file_path: str) -> str:
         """Get content type based on file extension."""
@@ -327,6 +358,88 @@ class StorageManager:
                 'error': f"Save operation error: {str(e)}"
             }
     
+    def save_reprocessed_transcription(self, original_transcription: Dict[str, Any], 
+                                      new_transcription_data: Dict[str, Any], 
+                                      user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Save reprocessed transcription to reprocessed_files collection.
+        Uses the S3 metadata from the original transcription (doesn't re-upload audio).
+        
+        Args:
+            original_transcription: The original transcription document from MongoDB
+            new_transcription_data: The new transcription data from reprocessing
+            user_id: User ID who initiated the reprocessing (optional)
+            
+        Returns:
+            Dictionary with operation result including new document ID
+        """
+        try:
+            if not self.reprocessed_collection:
+                return {
+                    'success': False,
+                    'error': 'Reprocessed files collection not initialized. Please check MongoDB connection.'
+                }
+            
+            # Use 'anonymous' if user_id is not provided
+            if not user_id:
+                user_id = 'anonymous'
+            
+            # Get S3 metadata from original transcription
+            s3_metadata = original_transcription.get('s3_metadata', {})
+            
+            if not s3_metadata:
+                return {
+                    'success': False,
+                    'error': 'Original transcription does not have S3 metadata'
+                }
+            
+            # Calculate edited_words_count if words are present
+            if 'words' in new_transcription_data:
+                edited_count = sum(1 for w in new_transcription_data['words'] if w.get('is_edited', False))
+                new_transcription_data['edited_words_count'] = edited_count
+            
+            # Prepare document with same schema as original collection
+            document = {
+                'transcription_data': new_transcription_data,
+                's3_metadata': s3_metadata,  # Use S3 metadata from original
+                'user_id': user_id,  # User who initiated reprocessing
+                'original_transcription_id': str(original_transcription.get('_id', '')),  # Reference to original
+                'assigned_user_id': original_transcription.get('assigned_user_id'),  # Keep same assignment
+                'review_round': original_transcription.get('review_round', 0),  # Keep same review round
+                'review_history': original_transcription.get('review_history', []),  # Copy review history
+                'created_at': datetime.now(timezone.utc),  # New creation time for reprocessed version
+                'updated_at': datetime.now(timezone.utc),
+                'reprocessed_at': datetime.now(timezone.utc),  # Track when reprocessing happened
+                'is_flagged': False,  # Reprocessed files are not flagged by default
+                'flag_reason': None,
+                'original_flag_reason': original_transcription.get('flag_reason'),  # Store original flag reason for reference
+                'reprocessed_with_context': new_transcription_data.get('metadata', {}).get('reprocessed_with_context', False)
+            }
+            
+            # Insert document into reprocessed_files collection
+            result = self.reprocessed_collection.insert_one(document)
+            
+            print(f"✅ Reprocessed transcription saved to 'reprocessed_files' collection")
+            print(f"   New Document ID: {result.inserted_id}")
+            print(f"   Original Transcription ID: {document['original_transcription_id']}")
+            
+            return {
+                'success': True,
+                'document_id': str(result.inserted_id),
+                'original_transcription_id': document['original_transcription_id'],
+                'message': 'Reprocessed transcription saved successfully'
+            }
+            
+        except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"❌ Error saving reprocessed transcription: {str(e)}")
+            print(error_trace)
+            return {
+                'success': False,
+                'error': f"Error saving reprocessed transcription: {str(e)}"
+            }
+    
     def get_transcription(self, document_id: str, user_id: Optional[str] = None, is_admin: bool = False) -> Optional[Dict[str, Any]]:
         """
         Retrieve transcription from MongoDB by document ID.
@@ -533,7 +646,7 @@ class StorageManager:
                 'error': f"Error unassigning transcription: {str(e)}"
             }
     
-    def flag_transcription(self, document_id: str, is_flagged: bool = True, flag_reason: Optional[str] = None) -> Dict[str, Any]:
+    def flag_transcription(self, document_id: str, is_flagged: bool = True, flag_reason: Optional[str] = None, is_double_flagged: bool = False) -> Dict[str, Any]:
         """
         Flag or unflag a transcription.
         
@@ -541,6 +654,7 @@ class StorageManager:
             document_id: MongoDB document ID
             is_flagged: Boolean to set flag state
             flag_reason: Optional reason for flagging
+            is_double_flagged: Boolean to set double flag state (for reprocessed files that still have issues)
             
         Returns:
             Dictionary with update result
@@ -567,6 +681,7 @@ class StorageManager:
             # Update fields
             update_fields = {
                 'is_flagged': is_flagged,
+                'is_double_flagged': is_double_flagged,
                 'updated_at': datetime.now(timezone.utc)
             }
             
@@ -575,6 +690,7 @@ class StorageManager:
             elif not is_flagged:
                 # Remove flag_reason if unflagging
                 update_fields['flag_reason'] = None
+                update_fields['is_double_flagged'] = False  # Also remove double flag when unflagging
             
             # Update the document
             update_result = self.collection.update_one(
@@ -590,14 +706,18 @@ class StorageManager:
                     'error': 'Transcription not found'
                 }
             
-            print(f"✅ {'Flagged' if is_flagged else 'Unflagged'} transcription {document_id}")
+            flag_status = 'Double flagged' if is_double_flagged else ('Flagged' if is_flagged else 'Unflagged')
+            print(f"✅ {flag_status} transcription {document_id}")
+            print(f"   MongoDB update result: matched={update_result.matched_count}, modified={update_result.modified_count}")
+            print(f"   Updated fields: {update_fields}")
             
             return {
                 'success': True,
                 'document_id': document_id,
                 'is_flagged': is_flagged,
+                'is_double_flagged': is_double_flagged,
                 'flag_reason': flag_reason if is_flagged else None,
-                'message': f"Transcription {'flagged' if is_flagged else 'unflagged'} successfully"
+                'message': f"Transcription {flag_status.lower()} successfully"
             }
             
         except Exception as e:
@@ -891,6 +1011,12 @@ class StorageManager:
                             {'manual_status': 'flagged'}
                         ]
                     })
+                elif status == 'double_flagged':
+                    # Double flagged files (is_double_flagged is True)
+                    additional_filters.append({'is_double_flagged': True})
+                elif status == 'reprocessed':
+                    # Files that have been reprocessed (has_been_reprocessed is True)
+                    additional_filters.append({'has_been_reprocessed': True})
                 elif status == 'done':
                     # Done if NOT flagged AND NOT completed AND (manual_status='done' OR (manual_status unset/invalid AND assigned==user))
                     additional_filters.append({
@@ -983,11 +1109,12 @@ class StorageManager:
             # Note: If search or assigned_for_review filter is active, we need to process more documents
             # because search relies on fields that might be in metadata, audio_path, or S3 key
             # and assigned_for_review requires checking review_history
-            # TODO: Optimize by adding text index for filename search
+            # Optimize: use smaller multiplier and add filename index
             needs_post_filtering = bool(search or status == 'assigned_for_review')
             
             # Calculate fetch size: if we need post-filtering, fetch more to account for filtering
-            fetch_limit = limit * 10 if needs_post_filtering else limit
+            # Reduced from 10x to 3x for better performance
+            fetch_limit = min(limit * 3, 200) if needs_post_filtering else limit
             fetch_skip = skip if not needs_post_filtering else 0  # Start from beginning if post-filtering
             
             # Get documents sorted by created_at descending (newest first)
@@ -1003,7 +1130,11 @@ class StorageManager:
                 'user_id': 1,
                 'assigned_user_id': 1,
                 'is_flagged': 1,
+                'is_double_flagged': 1,
                 'flag_reason': 1,
+                'has_been_reprocessed': 1,
+                'reprocessed_document_id': 1,
+                'reprocessed_at': 1,
                 'manual_status': 1,
                 'review_round': 1,
                 'review_history': 1,
@@ -1016,7 +1147,9 @@ class StorageManager:
                 'transcription_data.metadata.filename': 1,
                 'transcription_data.metadata.audio_path': 1,
                 'transcription_data.edited_words_count': 1,  # Use stored count if available
-                'transcription_data.words': 1,  # Include words to count review_round_edited_words
+                'transcription_data.review_round_edited_words_count': 1,  # Use stored count for review round
+                # Exclude words array for performance - it can be very large (100+ words)
+                # 'transcription_data.words': 1,  # REMOVED - causes 16 second delays!
                 's3_metadata.url': 1,
                 's3_metadata.key': 1,
                 'remarks': 1
@@ -1089,14 +1222,9 @@ class StorageManager:
                 # Otherwise default to 0 (words array excluded from projection for performance)
                 edited_words_count = transcription_data.get('edited_words_count', 0)
                 
-                # Calculate review round edited words count (words with edited_in_review_round: true)
-                review_round_edited_words_count = 0
-                words = transcription_data.get('words', [])
-                if words and isinstance(words, list):
-                    review_round_edited_words_count = sum(
-                        1 for word in words 
-                        if isinstance(word, dict) and word.get('edited_in_review_round') is True
-                    )
+                # Use stored review_round_edited_words_count instead of calculating
+                # This avoids loading the entire words array which causes massive slowdown
+                review_round_edited_words_count = transcription_data.get('review_round_edited_words_count', 0)
                 
                 # Determine status:
                 # Priority order:
@@ -1163,7 +1291,8 @@ class StorageManager:
                     computed_status = 'pending'  # Not assigned
                 
                 # Apply status filter (if specified and doesn't match, skip this document)
-                if status and computed_status != status:
+                # Skip this check for double_flagged and reprocessed since they use separate fields
+                if status and status not in ['double_flagged', 'reprocessed'] and computed_status != status:
                     continue
                 
                 # Apply search filter (if specified, check filename, assigned user name would need user lookup)
@@ -1189,7 +1318,10 @@ class StorageManager:
                     'assigned_user_id': doc.get('assigned_user_id'),  # Assigned user
                     'status': computed_status,  # 'done', 'pending', 'flagged', or 'completed'
                     'is_flagged': is_flagged,
+                    'is_double_flagged': doc.get('is_double_flagged', False),
                     'flag_reason': doc.get('flag_reason'),
+                    'has_been_reprocessed': doc.get('has_been_reprocessed', False),
+                    'reprocessed_document_id': doc.get('reprocessed_document_id'),
                     'edited_words_count': edited_words_count,  # Number of words edited
                     'review_round_edited_words_count': review_round_edited_words_count,  # Number of words edited in review round
                     'remarks': doc.get('remarks'),
@@ -1284,6 +1416,8 @@ class StorageManager:
                 'user_id': 1,
                 'assigned_user_id': 1,
                 'is_flagged': 1,
+                'is_double_flagged': 1,
+                'has_been_reprocessed': 1,
                 'manual_status': 1,
                 'review_round': 1,
                 'review_history': 1,
@@ -1299,6 +1433,8 @@ class StorageManager:
             pending_count = 0
             flagged_count = 0
             completed_count = 0
+            double_flagged_count = 0
+            reprocessed_count = 0
             total_done_duration = 0.0  # Total duration in seconds
             total_completed_duration = 0.0  # Total duration for completed files
             
@@ -1309,6 +1445,15 @@ class StorageManager:
                 # Get audio duration if available
                 transcription_data = doc.get('transcription_data', {})
                 audio_duration = transcription_data.get('audio_duration', 0) or 0
+                
+                # Track double flagged and reprocessed separately
+                is_double_flagged = doc.get('is_double_flagged', False)
+                has_been_reprocessed = doc.get('has_been_reprocessed', False)
+                
+                if is_double_flagged:
+                    double_flagged_count += 1
+                if has_been_reprocessed:
+                    reprocessed_count += 1
                 
                 # Determine status (same logic as in list_transcriptions)
                 is_flagged = doc.get('is_flagged', False)
@@ -1348,6 +1493,8 @@ class StorageManager:
                     'pending': pending_count,
                     'flagged': flagged_count,
                     'completed': completed_count,
+                    'double_flagged': double_flagged_count,
+                    'reprocessed': reprocessed_count,
                     'total_done_duration': total_done_duration,
                     'total_completed_duration': total_completed_duration
                 }
@@ -1574,10 +1721,14 @@ class StorageManager:
             
             # Prepare update data
             
-            # Calculate edited_words_count if words are present
+            # Calculate edited_words_count and review_round_edited_words_count if words are present
             if transcription_data.get('transcription_type') == 'words' and 'words' in transcription_data:
                 edited_count = sum(1 for w in transcription_data['words'] if w.get('is_edited', False))
                 transcription_data['edited_words_count'] = edited_count
+                
+                # Also calculate review round edited words count and store it
+                review_round_edited_count = sum(1 for w in transcription_data['words'] if w.get('edited_in_review_round', False))
+                transcription_data['review_round_edited_words_count'] = review_round_edited_count
                 
             update_data = {
                 'transcription_data': transcription_data,

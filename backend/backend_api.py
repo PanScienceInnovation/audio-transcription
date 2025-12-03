@@ -865,6 +865,334 @@ def transcribe_phrases():
         }), 500
 
 
+@app.route('/api/transcriptions/<transcription_id>/reprocess', methods=['POST'])
+def reprocess_transcription(transcription_id):
+    """
+    Reprocess a transcription by downloading the audio from S3 and running transcription again.
+    This is useful for flagged transcriptions that need to be reprocessed.
+    
+    Path Parameters:
+        - transcription_id: MongoDB document ID of the transcription to reprocess
+    
+    Headers:
+        - X-User-ID: User ID (optional)
+        - X-Is-Admin: 'true' or 'false' (default: 'false')
+    
+    Returns:
+        JSON response with new transcription data
+    """
+    try:
+        # Get user info from headers
+        user_id, is_admin = get_user_from_request()
+        
+        # Get the existing transcription from MongoDB
+        transcription = storage_manager.get_transcription(transcription_id, user_id, is_admin)
+        
+        if not transcription:
+            return jsonify({
+                'success': False,
+                'error': 'Transcription not found or access denied'
+            }), 404
+        
+        # Check if already reprocessed
+        if transcription.get('has_been_reprocessed'):
+            return jsonify({
+                'success': False,
+                'error': 'This transcription has already been reprocessed. If still not satisfied, please use "Double Flag" option instead.',
+                'already_reprocessed': True,
+                'reprocessed_document_id': transcription.get('reprocessed_document_id')
+            }), 400
+        
+        # Get S3 metadata
+        s3_metadata = transcription.get('s3_metadata', {})
+        s3_url = s3_metadata.get('url')
+        s3_key = s3_metadata.get('key')
+        
+        if not s3_url and not s3_key:
+            return jsonify({
+                'success': False,
+                'error': 'Audio file information not found in transcription metadata'
+            }), 400
+        
+        # Get transcription metadata
+        transcription_data = transcription.get('transcription_data', {})
+        source_language = transcription_data.get('language', 'Gujarati')
+        transcription_type = transcription_data.get('transcription_type', 'words')
+        original_filename = transcription_data.get('metadata', {}).get('filename', 'audio.mp3')
+        
+        # Get flag reason and old transcription for context
+        flag_reason = transcription.get('flag_reason', '')
+        
+        # Extract old transcription text based on type
+        old_transcription_text = ""
+        if transcription_type == 'words':
+            words = transcription_data.get('words', [])
+            old_transcription_text = ' '.join([w.get('word', '') for w in words])
+        else:  # phrases
+            phrases = transcription_data.get('phrases', [])
+            old_transcription_text = ' '.join([p.get('text', '') for p in phrases])
+        
+        # Build reference context with flag reason and old transcription
+        reference_context = ""
+        if flag_reason:
+            reference_context = f"ISSUE TO FIX: {flag_reason}\n\nPREVIOUS TRANSCRIPTION:\n{old_transcription_text}"
+            print(f"   Flag reason: {flag_reason}")
+        elif old_transcription_text:
+            reference_context = f"PREVIOUS TRANSCRIPTION:\n{old_transcription_text}"
+        
+        print(f"🔄 Reprocessing transcription: {transcription_id}")
+        print(f"   Language: {source_language}")
+        print(f"   Type: {transcription_type}")
+        print(f"   Original filename: {original_filename}")
+        print(f"   Using context: {'Yes - with flag reason' if flag_reason else 'Yes - with old transcription' if old_transcription_text else 'No'}")
+        
+        # Download audio file from S3 to temporary location
+        import requests
+        from io import BytesIO
+        
+        # Generate presigned URL if we have the key
+        if s3_key and storage_manager.s3_client:
+            try:
+                s3_url = storage_manager.s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={
+                        'Bucket': storage_manager.s3_bucket_name,
+                        'Key': s3_key
+                    },
+                    ExpiresIn=3600  # 1 hour
+                )
+                print(f"   Generated presigned URL for S3 key: {s3_key}")
+            except Exception as e:
+                print(f"   Warning: Could not generate presigned URL: {str(e)}")
+                # Fall back to direct URL if available
+                if not s3_url:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Could not access audio file: {str(e)}'
+                    }), 500
+        
+        # Download the audio file
+        print(f"   Downloading audio from S3...")
+        response = requests.get(s3_url, timeout=300)  # 5 minute timeout
+        
+        if response.status_code != 200:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to download audio file from S3: HTTP {response.status_code}'
+            }), 500
+        
+        # Save to temporary file
+        timestamp = int(time.time())
+        temp_filename = f"{timestamp}_{original_filename}"
+        temp_audio_path = os.path.join(AUDIO_FOLDER, temp_filename)
+        
+        with open(temp_audio_path, 'wb') as f:
+            f.write(response.content)
+        
+        print(f"   Audio downloaded to: {temp_audio_path}")
+        print(f"   File size: {len(response.content) / 1024 / 1024:.2f} MB")
+        
+        # Generate output filename
+        output_filename = f"{Path(temp_filename).stem}_reprocessed.json"
+        output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+        
+        # Reprocess based on transcription type
+        if transcription_type == 'phrases':
+            # Use phrase transcription with context
+            print(f"   Reprocessing as phrases with context...")
+            result = process_diarization(
+                audio_path=temp_audio_path,
+                output_json=output_path,
+                source_lang=source_language,
+                target_lang='English',
+                reference_passage=reference_context if reference_context else None
+            )
+            
+            # Get audio duration
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(temp_audio_path)
+            audio_duration = len(audio) / 1000.0
+            
+            # Extract phrases from result
+            phrases = result.get('phrases', [])
+            
+            print(f"✅ Reprocessing completed: {len(phrases)} phrases")
+            
+            # Prepare response data
+            response_data = {
+                'phrases': phrases,
+                'language': source_language,
+                'audio_duration': audio_duration,
+                'total_phrases': len(phrases),
+                'transcription_type': 'phrases',
+                'metadata': {
+                    'filename': original_filename,
+                    'audio_path': f"/api/audio/{temp_filename}",
+                    'reprocessed': True,
+                    'reprocessed_at': datetime.now(timezone.utc).isoformat(),
+                    'reprocessed_with_context': bool(reference_context),
+                    'original_flag_reason': flag_reason if flag_reason else None
+                }
+            }
+            
+            # Save the reprocessed transcription to reprocessed_files collection
+            save_result = storage_manager.save_reprocessed_transcription(
+                original_transcription=transcription,
+                new_transcription_data=response_data,
+                user_id=user_id
+            )
+            
+            if not save_result.get('success'):
+                return jsonify({
+                    'success': False,
+                    'error': f"Failed to save reprocessed transcription: {save_result.get('error')}"
+                }), 500
+            
+            # Mark the original transcription as reprocessed
+            from bson import ObjectId
+            update_result = storage_manager.collection.update_one(
+                {'_id': ObjectId(transcription_id)},
+                {'$set': {
+                    'has_been_reprocessed': True,
+                    'reprocessed_document_id': save_result['document_id'],
+                    'reprocessed_at': datetime.now(timezone.utc),
+                    'updated_at': datetime.now(timezone.utc)
+                }}
+            )
+            
+            print(f"   ✅ Reprocessed transcription saved to 'reprocessed_files' collection")
+            print(f"   New Document ID: {save_result['document_id']}")
+            print(f"   ✅ Original transcription marked as reprocessed in database")
+            print(f"   MongoDB update result: matched={update_result.matched_count}, modified={update_result.modified_count}")
+            
+            return jsonify({
+                'success': True,
+                'data': response_data,
+                'reprocessed_document_id': save_result['document_id'],
+                'original_transcription_id': transcription_id,
+                'message': 'Transcription reprocessed and saved to reprocessed_files collection'
+            })
+        else:
+            # Use word transcription with context
+            print(f"   Reprocessing as words with context...")
+            result = process_diarization(
+                audio_path=temp_audio_path,
+                output_json=output_path,
+                source_lang=source_language,
+                target_lang='English',
+                reference_passage=reference_context if reference_context else None
+            )
+            
+            # Get audio duration
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(temp_audio_path)
+            audio_duration = len(audio) / 1000.0
+            
+            # Extract words from annotations
+            simplified_words = []
+            annotations = result.get('annotations', [])
+            
+            for annotation in annotations:
+                transcription_list = annotation.get('Transcription', [])
+                word_text = transcription_list[0] if transcription_list else ''
+                
+                start_time = annotation.get('start', '')
+                end_time = annotation.get('end', '')
+                
+                # Calculate duration
+                duration = 0
+                if start_time and end_time:
+                    def timestamp_to_seconds(ts):
+                        parts = ts.split(':')
+                        if len(parts) == 3:
+                            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+                        elif len(parts) == 2:
+                            return float(parts[0]) * 60 + float(parts[1])
+                        return float(ts)
+                    
+                    start_sec = timestamp_to_seconds(start_time)
+                    end_sec = timestamp_to_seconds(end_time)
+                    duration = end_sec - start_sec
+                
+                simplified_words.append({
+                    'start': start_time,
+                    'word': word_text,
+                    'end': end_time,
+                    'duration': duration,
+                    'language': source_language
+                })
+            
+            print(f"✅ Reprocessing completed: {len(simplified_words)} words")
+            
+            # Prepare response data
+            response_data = {
+                'words': simplified_words,
+                'language': source_language,
+                'audio_duration': audio_duration,
+                'total_words': len(simplified_words),
+                'transcription_type': 'words',
+                'metadata': {
+                    'filename': original_filename,
+                    'audio_path': f"/api/audio/{temp_filename}",
+                    'reprocessed': True,
+                    'reprocessed_at': datetime.now(timezone.utc).isoformat(),
+                    'reprocessed_with_context': bool(reference_context),
+                    'original_flag_reason': flag_reason if flag_reason else None
+                },
+                'edited_words_count': 0  # Start with 0 for reprocessed data
+            }
+        
+        # Save the reprocessed transcription to reprocessed_files collection
+        # This uses the S3 key from the original transcription
+        save_result = storage_manager.save_reprocessed_transcription(
+            original_transcription=transcription,
+            new_transcription_data=response_data,
+            user_id=user_id
+        )
+        
+        if not save_result.get('success'):
+            return jsonify({
+                'success': False,
+                'error': f"Failed to save reprocessed transcription: {save_result.get('error')}"
+            }), 500
+        
+        # Mark the original transcription as reprocessed
+        from bson import ObjectId
+        update_result = storage_manager.collection.update_one(
+            {'_id': ObjectId(transcription_id)},
+            {'$set': {
+                'has_been_reprocessed': True,
+                'reprocessed_document_id': save_result['document_id'],
+                'reprocessed_at': datetime.now(timezone.utc),
+                'updated_at': datetime.now(timezone.utc)
+            }}
+        )
+        
+        print(f"   ✅ Reprocessed transcription saved to 'reprocessed_files' collection")
+        print(f"   New Document ID: {save_result['document_id']}")
+        print(f"   ✅ Original transcription marked as reprocessed in database")
+        print(f"   MongoDB update result: matched={update_result.matched_count}, modified={update_result.modified_count}")
+        
+        return jsonify({
+            'success': True,
+            'data': response_data,
+            'reprocessed_document_id': save_result['document_id'],
+            'original_transcription_id': transcription_id,
+            'message': 'Transcription reprocessed and saved to reprocessed_files collection'
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error during reprocessing: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'error_type': type(e).__name__
+        }), 500
+
+
 @app.route('/api/transcription/save-to-database', methods=['POST'])
 def save_to_database():
     """
@@ -1404,8 +1732,9 @@ def flag_transcription(transcription_id):
         
         is_flagged = bool(data['is_flagged'])
         flag_reason = data.get('flag_reason')
+        is_double_flagged = bool(data.get('is_double_flagged', False))
         
-        result = storage_manager.flag_transcription(transcription_id, is_flagged, flag_reason)
+        result = storage_manager.flag_transcription(transcription_id, is_flagged, flag_reason, is_double_flagged)
         
         if result['success']:
             return jsonify({
@@ -1413,6 +1742,7 @@ def flag_transcription(transcription_id):
                 'message': result.get('message', 'Transcription flag updated'),
                 'document_id': result.get('document_id'),
                 'is_flagged': result.get('is_flagged'),
+                'is_double_flagged': result.get('is_double_flagged'),
                 'flag_reason': result.get('flag_reason')
             })
         else:

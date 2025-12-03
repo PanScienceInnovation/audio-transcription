@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Users, FileText, UserCheck, UserX, Loader2, Search, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download, Trash2, Flag, Eye, MessageSquare } from 'lucide-react';
+import { Users, FileText, UserCheck, UserX, Loader2, Search, X, ChevronLeft, ChevronRight, ArrowLeft, CheckSquare, Square, Download, Trash2, Flag, Eye, MessageSquare, RefreshCw } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
 
@@ -82,7 +82,7 @@ function AdminPanel() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(20); // 20 items per page
   const [totalItems, setTotalItems] = useState(0); // Total items from backend
-  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, completed: 0, total_done_duration: 0, total_completed_duration: 0 }); // Statistics from backend
+  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, completed: 0, double_flagged: 0, reprocessed: 0, total_done_duration: 0, total_completed_duration: 0 }); // Statistics from backend
   const [selectedTranscriptions, setSelectedTranscriptions] = useState<Set<string>>(new Set());
   const [bulkAssignUserId, setBulkAssignUserId] = useState<string>('');
   const [bulkAssigning, setBulkAssigning] = useState(false);
@@ -920,6 +920,36 @@ function AdminPanel() {
                 </div>
               </div>
             </div>
+
+            {/* Double Flagged Files Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-orange-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Double Flagged</p>
+                  <p className="text-3xl font-bold text-gray-800">
+                    {statistics.double_flagged || 0}
+                  </p>
+                </div>
+                <div className="bg-orange-100 rounded-full p-3">
+                  <Flag className="h-8 w-8 text-orange-600 fill-current" />
+                </div>
+              </div>
+            </div>
+
+            {/* Reprocessed Files Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-blue-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Reprocessed</p>
+                  <p className="text-3xl font-bold text-gray-800">
+                    {statistics.reprocessed || 0}
+                  </p>
+                </div>
+                <div className="bg-blue-100 rounded-full p-3">
+                  <RefreshCw className="h-8 w-8 text-blue-600" />
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="mb-6 space-y-4">
@@ -952,6 +982,8 @@ function AdminPanel() {
                   <option value="pending">Pending</option>
                   <option value="assigned_for_review">Assigned for Review</option>
                   <option value="flagged">Flagged</option>
+                  <option value="double_flagged">Double Flagged</option>
+                  <option value="reprocessed">Reprocessed</option>
                 </select>
                 <select
                   value={languageFilter}
@@ -1242,7 +1274,7 @@ function AdminPanel() {
                           {(currentPage - 1) * itemsPerPage + index + 1}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center">
+                          <div className="flex items-center gap-2">
                             {/* <FileText className="h-5 w-5 text-gray-400 mr-2" /> */}
                             <button
                               onClick={() => handleLoadTranscription(transcription.filename)}
@@ -1251,6 +1283,16 @@ function AdminPanel() {
                             >
                               {transcription.filename}
                             </button>
+                            {(transcription as any).is_double_flagged && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-300">
+                                ⚠️ Double Flagged
+                              </span>
+                            )}
+                            {(transcription as any).has_been_reprocessed && !(transcription as any).is_double_flagged && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                                🔄 Reprocessed
+                              </span>
+                            )}
                           </div>
                         </td>
                         {/* <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
@@ -1269,6 +1311,10 @@ function AdminPanel() {
                             <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                               Assigned for Review
                             </span>
+                          ) : (transcription as any).is_double_flagged ? (
+                            <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-900 border border-orange-300">
+                              Double Flagged
+                            </span>
                           ) : (
                             <>
                               <select
@@ -1281,14 +1327,16 @@ function AdminPanel() {
                                     : transcription.status === 'done'
                                     ? 'bg-green-100 text-green-800'
                                     : transcription.status === 'flagged'
-                                      ? 'bg-red-100 text-red-800'
+                                      ? ((transcription as any).has_been_reprocessed ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800')
                                       : 'bg-yellow-100 text-yellow-800'
                                 } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
                               >
                                 <option value="pending">Pending</option>
                                 <option value="done">Done</option>
                                 <option value="completed">Completed</option>
-                                <option value="flagged">Flagged</option>
+                                <option value="flagged">
+                                  {(transcription as any).has_been_reprocessed ? 'Flagged (Reprocessed)' : 'Flagged'}
+                                </option>
                               </select>
                               {updatingStatus === transcription._id && (
                                 <Loader2 className="inline-block h-3 w-3 ml-2 animate-spin text-gray-500" />
