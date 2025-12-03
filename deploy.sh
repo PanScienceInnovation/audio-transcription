@@ -45,27 +45,53 @@ check_prerequisites() {
     print_info "Checking prerequisites..."
     
     local missing_deps=()
+    local docker_ok=false
+    local compose_ok=false
     
-    if ! command_exists docker; then
+    # Check for Docker
+    if command_exists docker; then
+        docker_ok=true
+    else
         missing_deps+=("docker")
     fi
     
-    if ! command_exists docker-compose; then
-        # Try docker compose (newer version)
-        if ! docker compose version >/dev/null 2>&1; then
+    # Check for Docker Compose (only if Docker exists)
+    if [ "$docker_ok" = true ]; then
+        if command_exists docker-compose; then
+            compose_ok=true
+        elif docker compose version >/dev/null 2>&1; then
+            compose_ok=true
+        else
             missing_deps+=("docker-compose or 'docker compose'")
         fi
+    else
+        # If docker doesn't exist, we can't check compose, so add it to missing
+        missing_deps+=("docker-compose or 'docker compose'")
     fi
     
     if [ ${#missing_deps[@]} -ne 0 ]; then
         print_error "Missing required dependencies: ${missing_deps[*]}"
-        print_error "Please install Docker and Docker Compose before deploying."
+        echo ""
+        print_info "Installation instructions:"
+        echo "  For Ubuntu/Debian:"
+        echo "    1. sudo apt update"
+        echo "    2. sudo apt install -y docker.io docker-compose"
+        echo "    3. sudo systemctl start docker"
+        echo "    4. sudo systemctl enable docker"
+        echo "    5. sudo usermod -aG docker \$USER"
+        echo "    6. Log out and back in, or run: newgrp docker"
+        echo ""
+        echo "  Note: After installation, verify with:"
+        echo "    docker --version"
+        echo "    docker-compose --version"
+        echo ""
         exit 1
     fi
     
     # Check if Docker daemon is running
     if ! docker info >/dev/null 2>&1; then
         print_error "Docker daemon is not running. Please start Docker and try again."
+        print_info "Try: sudo systemctl start docker"
         exit 1
     fi
     
