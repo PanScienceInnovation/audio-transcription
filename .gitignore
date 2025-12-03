@@ -112,3 +112,4 @@ SOP_USER.md
 missing_s3_files_report.txt
 mongodb_export/
 export_mongodb_data.py
+nginx/
