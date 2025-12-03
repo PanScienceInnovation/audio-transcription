@@ -130,6 +130,41 @@ USERS = [
         'is_admin': False
     },
     {
+        'username': 'user16',
+        'password': 'password16',
+        'email': 'user16@phonex.ai',
+        'name': 'User Sixteen',
+        'is_admin': False
+    },
+    {
+        'username': 'user17',
+        'password': 'password17',
+        'email': 'user17@phonex.ai',
+        'name': 'User Seventeen',
+        'is_admin': False
+    },
+    {
+        'username': 'user18',
+        'password': 'password18',
+        'email': 'user18@phonex.ai',
+        'name': 'User Eighteen',
+        'is_admin': False
+    },
+    {
+        'username': 'user19',
+        'password': 'password19',
+        'email': 'user19@phonex.ai',
+        'name': 'User Nineteen',
+        'is_admin': False
+    },
+    {
+        'username': 'user20',
+        'password': 'password20',
+        'email': 'user20@phonex.ai',
+        'name': 'User Twenty',
+        'is_admin': False
+    },
+    {
         'username': 'tester',
         'password': 'tester@123',
         'email': 'tester@phonex.ai',
