@@ -1173,14 +1173,22 @@ def save_file(transcription_id):
         else:
             computed_status = 'pending'
         
-        # Validation: Check if user is assigned to this file
-        # Note: Completed files can now be edited, so we don't block them here
-        assigned_user_id = current_doc.get('assigned_user_id')
-        if not assigned_user_id or str(assigned_user_id) != str(user_id):
+        # Validation: Only admins can edit completed files
+        if computed_status == 'completed' and not is_admin:
             return jsonify({
                 'success': False,
-                'error': 'You are not assigned to this file'
+                'error': 'Only admins can edit completed files'
             }), 403
+        
+        # Validation: Check if user is assigned to this file (admins can edit completed files without assignment)
+        assigned_user_id = current_doc.get('assigned_user_id')
+        if not (is_admin and computed_status == 'completed'):
+            # Non-admin users OR admins editing non-completed files must be assigned
+            if not assigned_user_id or str(assigned_user_id) != str(user_id):
+                return jsonify({
+                    'success': False,
+                    'error': 'You are not assigned to this file'
+                }), 403
         
         # Get current review_round and status
         review_round = current_doc.get('review_round', 0)
@@ -1196,7 +1204,11 @@ def save_file(transcription_id):
         new_status = None
         new_review_round = review_round
         
-        if computed_status == 'completed' or current_status == 'completed':
+        # CRITICAL: If admin is editing a completed file, ALWAYS preserve completed status
+        if is_admin and (computed_status == 'completed' or current_status == 'completed'):
+            new_status = 'completed'
+            new_review_round = 1  # Completed files always have review_round = 1
+        elif computed_status == 'completed' or current_status == 'completed':
             # File is already completed - keep it as completed when saving
             new_status = 'completed'
             # Ensure review_round is 1 for completed files
@@ -1282,11 +1294,18 @@ def update_transcription_by_id(transcription_id):
     """
     Update a transcription in MongoDB (all users can update all data).
     
+    Headers:
+        - X-User-ID: User ID (required for non-admin users)
+        - X-Is-Admin: 'true' or 'false' (default: 'false')
+    
     JSON Body:
         - transcription_data: Updated transcription data
         - user_id: (optional) User ID to mark who saved the changes
     """
     try:
+        # Get user info from headers
+        _, is_admin = get_user_from_request()
+        
         data = request.get_json()
         
         if not data or 'transcription_data' not in data:
@@ -1297,6 +1316,49 @@ def update_transcription_by_id(transcription_id):
         
         transcription_data = data['transcription_data']
         user_id = data.get('user_id')  # Get user_id from request
+        
+        # Get current file document to check its status
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        
+        try:
+            obj_id = ObjectId(transcription_id)
+        except (InvalidId, ValueError):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid file ID format'
+            }), 400
+        
+        current_doc = storage_manager.collection.find_one({'_id': obj_id})
+        if not current_doc:
+            return jsonify({
+                'success': False,
+                'error': 'File not found'
+            }), 404
+        
+        # Check if file is completed
+        current_status = current_doc.get('manual_status') or 'pending'
+        is_flagged = current_doc.get('is_flagged', False)
+        
+        # Compute current status (same logic as in save_file)
+        if is_flagged:
+            computed_status = 'flagged'
+        elif current_status in ['done', 'pending', 'flagged', 'completed']:
+            computed_status = current_status
+        elif current_doc.get('assigned_user_id') and current_doc.get('user_id'):
+            if str(current_doc.get('assigned_user_id')) == str(current_doc.get('user_id')):
+                computed_status = 'done'
+            else:
+                computed_status = 'pending'
+        else:
+            computed_status = 'pending'
+        
+        # Validation: Only admins can edit completed files
+        if computed_status == 'completed' and not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Only admins can edit completed files'
+            }), 403
         
         result = storage_manager.update_transcription(transcription_id, transcription_data, user_id=user_id)
         

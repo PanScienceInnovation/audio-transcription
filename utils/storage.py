@@ -1112,20 +1112,43 @@ class StorageManager:
                 # Flagged status has highest priority - flagged files stay flagged
                 if is_flagged:
                     computed_status = 'flagged'
+                # Completed status has second-highest priority - completed files stay completed
+                # This must be checked BEFORE reassignment logic to prevent completed files from
+                # being shown as "assigned_for_review" when edited by admin
+                elif manual_status == 'completed':
+                    computed_status = 'completed'
                 # Check if file has been reassigned (has reassign action in review_history)
                 # and new assignee hasn't saved yet (assigned_user_id != user_id)
-                # This check should happen before manual_status to override it when reassigned
+                # This check should happen before other manual_status checks to override them when reassigned
+                # IMPORTANT: This logic should NOT apply if the last person who saved is an admin
                 elif assigned_user_id:
                     review_history = doc.get('review_history', [])
                     has_reassign_action = any(entry.get('action') == 'reassign' for entry in review_history)
                     
-                    if has_reassign_action and doc_user_id and str(assigned_user_id) != str(doc_user_id):
+                    # Check if last saver (user_id) is an admin
+                    is_last_saver_admin = False
+                    if doc_user_id:
+                        try:
+                            from bson import ObjectId
+                            users_collection = self.db['users']
+                            user_doc = users_collection.find_one({'_id': ObjectId(doc_user_id)})
+                            if user_doc:
+                                is_last_saver_admin = user_doc.get('is_admin', False)
+                        except Exception:
+                            # If we can't check, assume not admin
+                            pass
+                    
+                    # Only show "assigned_for_review" if:
+                    # 1. File was reassigned AND
+                    # 2. assigned_user_id != user_id AND
+                    # 3. Last person who saved (user_id) is NOT an admin
+                    if has_reassign_action and doc_user_id and str(assigned_user_id) != str(doc_user_id) and not is_last_saver_admin:
                         # File was reassigned and new assignee hasn't saved yet
                         # This overrides manual_status to show "Assigned for Review"
                         computed_status = 'assigned_for_review'
-                    # Use manual_status if set (by admin or when saving changes), including 'completed'
+                    # Use manual_status if set (by admin or when saving changes)
                     # But only if not reassigned (reassignment already handled above)
-                    elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed']:
+                    elif manual_status and manual_status in ['done', 'pending', 'flagged']:
                         computed_status = manual_status
                     elif doc_user_id and str(assigned_user_id) == str(doc_user_id):
                         # Assigned and assigned user has saved changes
@@ -1134,7 +1157,7 @@ class StorageManager:
                         # Assigned but assigned user hasn't saved yet (first assignment)
                         computed_status = 'pending'
                 # Use manual_status if set and file is not assigned
-                elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed']:
+                elif manual_status and manual_status in ['done', 'pending', 'flagged']:
                     computed_status = manual_status
                 else:
                     computed_status = 'pending'  # Not assigned

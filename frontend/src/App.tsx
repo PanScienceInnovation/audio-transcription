@@ -933,7 +933,11 @@ function App() {
           
           // Show user-friendly error messages
           if (error.response?.status === 403) {
-            alert('Access Denied: You are not assigned to this file. Please contact an administrator.');
+            if (errorMessage.includes('completed')) {
+              alert('Access Denied: This file is completed and can only be edited by admins. Please contact an administrator.');
+            } else {
+              alert('Access Denied: You are not assigned to this file. Please contact an administrator.');
+            }
           } else if (error.response?.status === 400) {
             if (errorMessage.includes('completed')) {
               alert('Error: This file is already completed and cannot be modified.');
