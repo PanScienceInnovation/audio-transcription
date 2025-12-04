@@ -1532,26 +1532,39 @@ def save_file(transcription_id):
         new_status = None
         new_review_round = review_round
         
+        print(f"📊 Save file status determination:")
+        print(f"   File ID: {transcription_id}")
+        print(f"   User ID: {user_id}, Is Admin: {is_admin}")
+        print(f"   Current review_round: {review_round}")
+        print(f"   Current manual_status: {current_status}")
+        print(f"   Current computed_status: {computed_status}")
+        print(f"   Is Flagged: {is_flagged}")
+        
         # CRITICAL: If admin is editing a completed file, ALWAYS preserve completed status
         if is_admin and (computed_status == 'completed' or current_status == 'completed'):
             new_status = 'completed'
             new_review_round = 1  # Completed files always have review_round = 1
+            print(f"   → Admin editing completed file: status = 'completed', review_round = 1")
         elif computed_status == 'completed' or current_status == 'completed':
             # File is already completed - keep it as completed when saving
             new_status = 'completed'
             # Ensure review_round is 1 for completed files
             if review_round != 1:
                 new_review_round = 1
+            print(f"   → File already completed: status = 'completed', review_round = {new_review_round}")
         elif review_round == 0:
             # First reviewer: status = "done", review_round stays 0
             new_status = 'done'
+            print(f"   → First review (review_round=0): status = 'done', review_round stays 0")
         elif review_round == 1:
             # Second reviewer: status = "completed", review_round stays 1
             new_status = 'completed'
+            print(f"   → Second review (review_round=1): status = 'completed', review_round stays 1")
         else:
             # Fallback: if review_round is not 0 or 1, treat as first review
             new_review_round = 0
             new_status = 'done'
+            print(f"   → Fallback (invalid review_round={review_round}): status = 'done', review_round = 0")
         
         # Update transcription data
         update_result = storage_manager.update_transcription(
@@ -1567,6 +1580,10 @@ def save_file(transcription_id):
                 'success': False,
                 'error': update_result.get('error', 'Failed to update transcription')
             }), 500
+        
+        print(f"✅ File saved successfully:")
+        print(f"   Status set to: {new_status}")
+        print(f"   Review round set to: {new_review_round}")
         
         # Add review history entry
         review_history_entry = {
@@ -2895,12 +2912,13 @@ def get_team_stats():
             transcription_filters['transcription_type'] = transcription_type
         
         # Get all transcriptions with filters (admin sees all)
+        # Now includes filename search to filter transcriptions by filename
         transcriptions_result = storage_manager.list_transcriptions(
             limit=10000,  # Get all transcriptions (we'll filter by user)
             skip=0,
             user_id=None,
             is_admin=True,
-            search=None,  # Don't filter by filename search here
+            search=search,  # Filter by filename search (database-level regex search)
             language=language,
             date=date,
             status=status,
@@ -2944,17 +2962,27 @@ def get_team_stats():
                 'pendingFiles': pending_files
             })
         
-        # Apply search filter to users (if provided)
+        # Apply search filter to users (if provided and looks like a user search, not filename)
+        # If search contains file extensions or is all numeric, it's likely a filename search
+        # In that case, don't filter users - show all users who have files matching the filename
         if search:
             search_lower = search.lower()
-            user_stats = [
-                stat for stat in user_stats
-                if (
-                    search_lower in stat['user'].get('name', '').lower() or
-                    search_lower in stat['user'].get('username', '').lower() or
-                    search_lower in stat['user'].get('email', '').lower()
-                )
-            ]
+            # Check if search looks like a filename (has extensions or is numeric like "7197389")
+            looks_like_filename = (
+                any(ext in search_lower for ext in ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac']) or
+                search.replace('_', '').isdigit()
+            )
+            
+            # Only filter by user name/email if it doesn't look like a filename search
+            if not looks_like_filename:
+                user_stats = [
+                    stat for stat in user_stats
+                    if (
+                        search_lower in stat['user'].get('name', '').lower() or
+                        search_lower in stat['user'].get('username', '').lower() or
+                        search_lower in stat['user'].get('email', '').lower()
+                    )
+                ]
         
         # Calculate totals
         total_team_members = len(user_stats)

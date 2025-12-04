@@ -691,6 +691,7 @@ function AdminPanel() {
 
   // Total duration is now fetched from backend statistics
   const totalDoneDuration = statistics.total_done_duration || 0;
+  const totalCompletedDuration = statistics.total_completed_duration || 0;
 
   // Get unique languages for filter dropdown (from all transcriptions, not just current page)
   // Note: This might need to be loaded separately or cached
@@ -841,6 +842,7 @@ function AdminPanel() {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-medium text-blue-900 mb-1">Total Duration of Done Files: {formatDuration(totalDoneDuration)}</h3>
+                <h3 className="text-sm font-medium text-blue-900 mb-1">Total Duration of Completed Files: {formatDuration(totalCompletedDuration)}</h3>
               </div>
             </div>
           </div>
@@ -960,7 +962,7 @@ function AdminPanel() {
               </div>
 
               {/* First Row: Search and Basic Filters */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
                   <input
@@ -997,10 +999,6 @@ function AdminPanel() {
                     </option>
                   ))}
                 </select>
-              </div>
-
-              {/* Second Row: User and Flag Filters */}
-              <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 ${statusFilter === 'done' && dateFilter ? 'mb-6' : 'mb-4'}`}>
                 <select
                   value={assignedUserFilter}
                   onChange={(e) => setAssignedUserFilter(e.target.value)}
@@ -1014,15 +1012,6 @@ function AdminPanel() {
                     </option>
                   ))}
                 </select>
-                {/* <select
-                  value={flaggedFilter}
-                  onChange={(e) => setFlaggedFilter(e.target.value)}
-                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                >
-                  <option value="">All Files</option>
-                  <option value="flagged">Flagged Only</option>
-                  <option value="not-flagged">Not Flagged</option>
-                </select> */}
                 <div className="relative">
                   <input
                     type="date"
@@ -1040,6 +1029,49 @@ function AdminPanel() {
                     </span>
                   )}
                 </div>
+              </div>
+
+              {/* Second Row: User and Flag Filters */}
+              <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 ${statusFilter === 'done' && dateFilter ? 'mb-6' : 'mb-4'}`}>
+                {/* <select
+                  value={assignedUserFilter}
+                  onChange={(e) => setAssignedUserFilter(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                >
+                  <option value="">All Users</option>
+                  <option value="unassigned">Unassigned</option>
+                  {users.map((user) => (
+                    <option key={user._id} value={user._id}>
+                      {user.name || user.username}
+                    </option>
+                  ))}
+                </select> */}
+                {/* <select
+                  value={flaggedFilter}
+                  onChange={(e) => setFlaggedFilter(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                >
+                  <option value="">All Files</option>
+                  <option value="flagged">Flagged Only</option>
+                  <option value="not-flagged">Not Flagged</option>
+                </select> */}
+                {/* <div className="relative">
+                  <input
+                    type="date"
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white w-full"
+                    placeholder="Filter by date"
+                    title={statusFilter === 'done' 
+                      ? "Filter by updated date (when file was marked as done)" 
+                      : "Filter by created date"}
+                  />
+                  {statusFilter === 'done' && dateFilter && (
+                    <span className="absolute -bottom-5 left-0 text-xs text-gray-500 whitespace-nowrap">
+                      Filtering by updated date
+                    </span>
+                  )}
+                </div> */}
                 {/* Clear Filters Button */}
                 {(searchTerm || languageFilter || dateFilter || statusFilter || assignedUserFilter) && (
                   <div className="flex items-center gap-2">

@@ -1083,8 +1083,15 @@ class StorageManager:
                         ]
                     })
                 elif status == 'completed':
-                    # Completed if manual_status is 'completed'
-                    additional_filters.append({'manual_status': 'completed'})
+                    # Completed if manual_status is 'completed' AND NOT flagged
+                    # Flagged files have higher priority and should not appear as completed
+                    additional_filters.append({
+                        '$and': [
+                            {'manual_status': 'completed'},
+                            # Not flagged
+                            {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]}
+                        ]
+                    })
                 elif status == 'assigned_for_review':
                     # Assigned for review: has reassign action in review_history and assigned_user_id != user_id
                     # This will be handled in post-filtering since it requires checking review_history
@@ -1474,6 +1481,7 @@ class StorageManager:
                 assigned_user_id = doc.get('assigned_user_id')
                 doc_user_id = doc.get('user_id')
                 manual_status = doc.get('manual_status')
+                review_round = doc.get('review_round', 0)
                 
                 # Flagged status has highest priority
                 if is_flagged:
@@ -1498,6 +1506,13 @@ class StorageManager:
                     flagged_count += 1
                 else:
                     pending_count += 1
+            
+            print(f"📊 Statistics calculation complete:")
+            print(f"   Total: {total_count}")
+            print(f"   Done: {done_count}")
+            print(f"   Completed: {completed_count}")
+            print(f"   Pending: {pending_count}")
+            print(f"   Flagged: {flagged_count}")
             
             return {
                 'success': True,
