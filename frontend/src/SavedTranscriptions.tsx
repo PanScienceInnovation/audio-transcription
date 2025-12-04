@@ -152,15 +152,35 @@ function SavedTranscriptions() {
 
   useEffect(() => {
     fetchTranscriptions();
-  }, [currentPage]);
+  }, [fetchTranscriptions, currentPage]);
 
-  const fetchTranscriptions = async () => {
+  const fetchTranscriptions = useCallback(async () => {
     setLoading(true);
     try {
       const config = getAxiosConfig();
-      // Fetch all transcriptions to filter and sort
+      // Build query params for backend filtering
+      const params = new URLSearchParams();
+      params.append('limit', '1000'); // Fetch more items to handle all filters
+      params.append('skip', '0');
+      
+      // Pass search term to backend for efficient server-side filtering
+      if (searchTerm) {
+        params.append('search', searchTerm);
+      }
+      
+      // Pass other filters to backend
+      if (languageFilter) {
+        params.append('language', languageFilter);
+      }
+      if (transcriptionTypeFilter) {
+        params.append('transcription_type', transcriptionTypeFilter);
+      }
+      if (dateFilter) {
+        params.append('date', dateFilter);
+      }
+      
       const response = await axios.get(
-        `${API_BASE_URL}/api/transcriptions?limit=50&skip=0`,
+        `${API_BASE_URL}/api/transcriptions?${params.toString()}`,
         config
       );
       if (response.data.success) {
@@ -174,45 +194,15 @@ function SavedTranscriptions() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchTerm, languageFilter, transcriptionTypeFilter, dateFilter]);
 
-  // Filter and sort transcriptions
+  // Filter and sort transcriptions (backend now handles search, language, type, date filters)
   useEffect(() => {
     let filtered = [...allTranscriptions];
 
-    // Apply search filter
-    if (searchTerm) {
-      const searchLower = searchTerm.toLowerCase();
-      filtered = filtered.filter(t => 
-        t.filename?.toLowerCase().includes(searchLower) ||
-        (t.status && t.status.toLowerCase().includes(searchLower))
-      );
-    }
-
-    // Apply status filter
+    // Apply status filter (client-side only - backend doesn't handle this filter via query param yet)
     if (statusFilter) {
       filtered = filtered.filter(t => t.status === statusFilter);
-    }
-
-    // Apply language filter
-    if (languageFilter) {
-      filtered = filtered.filter(t => t.language === languageFilter);
-    }
-
-    // Apply transcription type filter
-    if (transcriptionTypeFilter) {
-      filtered = filtered.filter(t => t.transcription_type === transcriptionTypeFilter);
-    }
-
-    // Apply date filter
-    if (dateFilter) {
-      const filterDate = new Date(dateFilter);
-      filtered = filtered.filter(t => {
-        const transcriptionDate = new Date(t.created_at);
-        return transcriptionDate.getFullYear() === filterDate.getFullYear() &&
-               transcriptionDate.getMonth() === filterDate.getMonth() &&
-               transcriptionDate.getDate() === filterDate.getDate();
-      });
     }
 
     setTotalItems(filtered.length);
@@ -221,7 +211,7 @@ function SavedTranscriptions() {
     const skip = (currentPage - 1) * itemsPerPage;
     const paginated = filtered.slice(skip, skip + itemsPerPage);
     setTranscriptions(paginated);
-  }, [allTranscriptions, searchTerm, statusFilter, languageFilter, transcriptionTypeFilter, dateFilter, currentPage, itemsPerPage]);
+  }, [allTranscriptions, statusFilter, currentPage, itemsPerPage]);
 
   // Reset to page 1 when filters change
   useEffect(() => {

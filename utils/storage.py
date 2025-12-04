@@ -91,6 +91,11 @@ class StorageManager:
                 self.collection.create_index([('transcription_data.language', 1)])  # Language filter
                 self.collection.create_index([('transcription_data.transcription_type', 1)])  # Type filter
                 
+                # Search indexes for filename fields (for regex search)
+                self.collection.create_index([('transcription_data.metadata.filename', 1)])  # Filename search
+                self.collection.create_index([('s3_metadata.key', 1)])  # S3 key search
+                self.collection.create_index([('transcription_data.audio_path', 1)])  # Audio path search
+                
                 # Create indexes for version history collection
                 self.version_history_collection.create_index('transcription_id')
                 self.version_history_collection.create_index([('transcription_id', 1), ('timestamp', -1)])  # Compound index for efficient queries
@@ -937,6 +942,19 @@ class StorageManager:
             # Apply additional filters
             additional_filters = []
             
+            # Search filter (database-level using regex for better performance)
+            # Search in filename, audio_path, and S3 key
+            if search:
+                search_regex = {'$regex': search, '$options': 'i'}  # Case-insensitive search
+                additional_filters.append({
+                    '$or': [
+                        {'transcription_data.metadata.filename': search_regex},
+                        {'transcription_data.audio_path': search_regex},
+                        {'transcription_data.metadata.audio_path': search_regex},
+                        {'s3_metadata.key': search_regex},
+                    ]
+                })
+            
             # Language filter
             if language:
                 additional_filters.append({'transcription_data.language': language})
@@ -1106,15 +1124,13 @@ class StorageManager:
                 else:
                     query_filter = {'$and': additional_filters} if len(additional_filters) > 1 else additional_filters[0]
             
-            # Note: If search or assigned_for_review filter is active, we need to process more documents
-            # because search relies on fields that might be in metadata, audio_path, or S3 key
-            # and assigned_for_review requires checking review_history
-            # Other status filters (done, pending, completed, flagged, double_flagged, reprocessed) 
-            # are handled at DB level and don't need post-filtering
-            needs_post_filtering = bool(search or status == 'assigned_for_review')
+            # Note: Search is now handled at database level via regex filter
+            # Only assigned_for_review status requires post-filtering because it needs to check review_history
+            # All other filters (search, status, language, etc.) are handled at DB level
+            needs_post_filtering = (status == 'assigned_for_review')
             
             # Calculate fetch size: if we need post-filtering, fetch more to account for filtering
-            # Reduced from 10x to 3x for better performance
+            # For assigned_for_review, fetch 3x the limit (capped at 200)
             fetch_limit = min(limit * 3, 200) if needs_post_filtering else limit
             fetch_skip = skip if not needs_post_filtering else 0  # Start from beginning if post-filtering
             
@@ -1298,13 +1314,8 @@ class StorageManager:
                 if status == 'assigned_for_review' and computed_status != status:
                     continue
                 
-                # Apply search filter (if specified, check filename, assigned user name would need user lookup)
-                if search:
-                    search_lower = search.lower()
-                    # Check filename
-                    if search_lower not in display_filename.lower():
-                        # Could also check status, but we already filtered by status above
-                        continue
+                # Search filter is now handled at database level via regex
+                # No need for post-filtering on search term
                 
                 summary = {
                     '_id': doc['_id'],
