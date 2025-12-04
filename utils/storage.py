@@ -1109,7 +1109,8 @@ class StorageManager:
             # Note: If search or assigned_for_review filter is active, we need to process more documents
             # because search relies on fields that might be in metadata, audio_path, or S3 key
             # and assigned_for_review requires checking review_history
-            # Optimize: use smaller multiplier and add filename index
+            # Other status filters (done, pending, completed, flagged, double_flagged, reprocessed) 
+            # are handled at DB level and don't need post-filtering
             needs_post_filtering = bool(search or status == 'assigned_for_review')
             
             # Calculate fetch size: if we need post-filtering, fetch more to account for filtering
@@ -1291,8 +1292,10 @@ class StorageManager:
                     computed_status = 'pending'  # Not assigned
                 
                 # Apply status filter (if specified and doesn't match, skip this document)
-                # Skip this check for double_flagged and reprocessed since they use separate fields
-                if status and status not in ['double_flagged', 'reprocessed'] and computed_status != status:
+                # Only apply application-level status filtering for 'assigned_for_review' since
+                # all other statuses are already filtered at the database level
+                # Note: double_flagged and reprocessed use separate DB fields and don't need this check
+                if status == 'assigned_for_review' and computed_status != status:
                     continue
                 
                 # Apply search filter (if specified, check filename, assigned user name would need user lookup)
