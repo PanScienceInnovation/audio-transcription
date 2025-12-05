@@ -697,7 +697,8 @@ function AdminPanel() {
   // Note: This might need to be loaded separately or cached
   const uniqueLanguages = Array.from(new Set(transcriptions.map(t => t.language).filter(Boolean))).sort();
 
-  // Transcriptions are already filtered and paginated by the backend
+  // Transcriptions are already filtered, sorted, and paginated by the backend
+  // When filtering by 'done', the backend ensures actual 'done' files appear before 'assigned_for_review' files
   const paginatedTranscriptions = transcriptions;
   
   // Calculate pagination info
@@ -982,7 +983,7 @@ function AdminPanel() {
                   <option value="done">Done</option>
                   <option value="completed">Completed</option>
                   <option value="pending">Pending</option>
-                  <option value="assigned_for_review">Assigned for Review</option>
+                  {/* <option value="assigned_for_review">Assigned for Review</option> */}
                   <option value="flagged">Flagged</option>
                   <option value="double_flagged">Double Flagged</option>
                   <option value="reprocessed">Reprocessed</option>

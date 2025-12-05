@@ -1132,14 +1132,28 @@ class StorageManager:
                     query_filter = {'$and': additional_filters} if len(additional_filters) > 1 else additional_filters[0]
             
             # Note: Search is now handled at database level via regex filter
-            # Only assigned_for_review status requires post-filtering because it needs to check review_history
-            # All other filters (search, status, language, etc.) are handled at DB level
+            # Some statuses require post-filtering/sorting:
+            # - 'assigned_for_review': needs to check review_history
+            # - 'done': needs sorting to prioritize actual 'done' over 'assigned_for_review'
             needs_post_filtering = (status == 'assigned_for_review')
+            needs_post_sorting = (status == 'done')  # Need to sort after computing status
             
-            # Calculate fetch size: if we need post-filtering, fetch more to account for filtering
+            # Calculate fetch size: if we need post-filtering or post-sorting, fetch all matching documents
             # For assigned_for_review, fetch 3x the limit (capped at 200)
-            fetch_limit = min(limit * 3, 200) if needs_post_filtering else limit
-            fetch_skip = skip if not needs_post_filtering else 0  # Start from beginning if post-filtering
+            # For done status, fetch all documents to enable proper sorting across pages
+            if needs_post_sorting:
+                # For 'done' status, we need to fetch ALL matching documents to sort properly
+                # Get the count first to know how many to fetch
+                count_for_done = self.collection.count_documents(query_filter)
+                fetch_limit = count_for_done  # Fetch all matching documents
+                fetch_skip = 0
+                print(f"📋 'done' filter detected - fetching all {fetch_limit} matching documents for proper sorting")
+            elif needs_post_filtering:
+                fetch_limit = min(limit * 3, 200)
+                fetch_skip = 0  # Start from beginning if post-filtering
+            else:
+                fetch_limit = limit
+                fetch_skip = skip
             
             # Get documents sorted by created_at descending (newest first)
             # Use projection to exclude large fields we don't need for list view
@@ -1354,12 +1368,25 @@ class StorageManager:
             process_time = (time.time() - process_start) * 1000
             print(f"⏱️  [TIMING] Document processing took {process_time:.2f}ms (processed {len(transcriptions)} documents before pagination)")
             
-            # Apply pagination if we did post-filtering
-            if needs_post_filtering:
+            # When filtering by 'done', sort to prioritize actual 'done' files over 'assigned_for_review' files
+            # This ensures done files appear first across all pages
+            if needs_post_sorting:
+                sort_start = time.time()
+                transcriptions.sort(key=lambda x: (
+                    0 if x['status'] == 'done' else 1  # done files first (0), then assigned_for_review (1)
+                ))
+                sort_time = (time.time() - sort_start) * 1000
+                done_count = sum(1 for t in transcriptions if t['status'] == 'done')
+                assigned_for_review_count = sum(1 for t in transcriptions if t['status'] == 'assigned_for_review')
+                print(f"📋 Sorted {len(transcriptions)} 'done' filter results in {sort_time:.2f}ms: {done_count} actual done files first, then {assigned_for_review_count} assigned_for_review")
+            
+            # Apply pagination if we did post-filtering or post-sorting
+            if needs_post_filtering or needs_post_sorting:
                 total_count = len(transcriptions)
-                # Apply skip and limit to filtered results
+                # Apply skip and limit to filtered/sorted results
                 transcriptions = transcriptions[skip:skip + limit]
-                print(f"📄 Applied post-filtering pagination: showing {len(transcriptions)} of {total_count} filtered results")
+                operation = "post-sorting" if needs_post_sorting else "post-filtering"
+                print(f"📄 Applied {operation} pagination: showing {len(transcriptions)} of {total_count} results (skip={skip}, limit={limit})")
             else:
                 # Get total count for non-post-filtered queries
                 count_start = time.time()

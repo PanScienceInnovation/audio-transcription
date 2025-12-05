@@ -2850,19 +2850,20 @@ def list_users():
 @app.route('/api/admin/team-stats', methods=['GET'])
 def get_team_stats():
     """
-    Get team statistics with filtering (admin only).
-    Returns user statistics with transcription counts filtered by query parameters.
+    Get team statistics with filtering (admin only) - OPTIMIZED VERSION.
+    Uses MongoDB aggregation pipeline for efficient stats calculation.
     
     Headers:
         - X-Is-Admin: 'true' (required)
     
     Query Parameters:
-        - search: Search term for user name, username, or email (case-insensitive)
-        - status: Filter transcriptions by status ('done', 'pending', 'flagged')
+        - search: Search term for user name, username, email, or filename (case-insensitive)
+        - status: Filter transcriptions by status ('done', 'pending', 'flagged', 'completed')
         - language: Filter transcriptions by language
         - date: Filter transcriptions by date (YYYY-MM-DD format)
         - transcription_type: Filter by transcription type ('words' or 'phrases')
     """
+    start_time = time.time()
     try:
         # Check if user is admin
         _, is_admin = get_user_from_request()
@@ -2872,117 +2873,247 @@ def get_team_stats():
                 'error': 'Admin access required'
             }), 403
         
-        if not users_collection:
+        if not users_collection or not storage_manager.collection:
             return jsonify({
                 'success': False,
-                'error': 'User service unavailable'
+                'error': 'Database service unavailable'
             }), 500
         
         # Get filter parameters
         search = request.args.get('search', '').strip() or None
         status = request.args.get('status', '').strip() or None
         language = request.args.get('language', '').strip() or None
-        date = request.args.get('date', '').strip() or None
+        date_filter = request.args.get('date', '').strip() or None
         transcription_type = request.args.get('transcription_type', '').strip() or None
         
-        # Get all non-admin users
-        all_users = []
-        for user in users_collection.find({}, {'password_hash': 0}):  # Exclude password
-            if user.get('is_admin', False):
-                continue  # Skip admins
+        print(f"⏱️  [TEAM-STATS] Started with filters: search={search}, status={status}, language={language}, date={date_filter}, type={transcription_type}")
+        
+        # Step 1: Get all non-admin users with optional user search filter
+        user_query = {'is_admin': {'$ne': True}}
+        if search:
+            search_lower = search.lower()
+            # Check if search looks like a filename
+            looks_like_filename = (
+                any(ext in search_lower for ext in ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac']) or
+                search.replace('_', '').replace('-', '').isdigit()
+            )
             
-            user['_id'] = str(user['_id'])
+            # If it doesn't look like a filename, filter users
+            if not looks_like_filename:
+                search_regex = {'$regex': search, '$options': 'i'}
+                user_query['$or'] = [
+                    {'name': search_regex},
+                    {'username': search_regex},
+                    {'email': search_regex}
+                ]
+        
+        users_start = time.time()
+        users_cursor = users_collection.find(user_query, {'password_hash': 0})
+        all_users = {}
+        for user in users_cursor:
+            user_id_str = str(user['_id'])
+            user['_id'] = user_id_str
             if 'created_at' in user and isinstance(user['created_at'], datetime):
                 user['created_at'] = user['created_at'].isoformat()
             if 'updated_at' in user and isinstance(user['updated_at'], datetime):
                 user['updated_at'] = user['updated_at'].isoformat()
             if 'last_login' in user and isinstance(user['last_login'], datetime):
                 user['last_login'] = user['last_login'].isoformat()
-            all_users.append(user)
+            all_users[user_id_str] = user
         
-        # Build transcription query filters (same as list_transcriptions)
-        transcription_filters = {}
-        if language:
-            transcription_filters['language'] = language
-        if date:
-            transcription_filters['date'] = date
-        if status:
-            transcription_filters['status'] = status
-        if transcription_type:
-            transcription_filters['transcription_type'] = transcription_type
+        users_time = (time.time() - users_start) * 1000
+        print(f"⏱️  [TEAM-STATS] Loaded {len(all_users)} users in {users_time:.2f}ms")
         
-        # Get all transcriptions with filters (admin sees all)
-        # Now includes filename search to filter transcriptions by filename
-        transcriptions_result = storage_manager.list_transcriptions(
-            limit=10000,  # Get all transcriptions (we'll filter by user)
-            skip=0,
-            user_id=None,
-            is_admin=True,
-            search=search,  # Filter by filename search (database-level regex search)
-            language=language,
-            date=date,
-            status=status,
-            assigned_user=None,
-            flagged=None,
-            transcription_type=transcription_type
-        )
+        # Step 2: Build aggregation pipeline for transcription statistics
+        # This is MUCH faster than loading all transcriptions into memory
+        agg_start = time.time()
         
-        if not transcriptions_result.get('success'):
-            return jsonify({
-                'success': False,
-                'error': transcriptions_result.get('error', 'Failed to fetch transcriptions')
-            }), 500
+        # Build match stage for transcription filters
+        match_stage = {'assigned_user_id': {'$ne': None}}  # Only assigned transcriptions
         
-        transcriptions = transcriptions_result.get('transcriptions', [])
-        
-        # Calculate statistics for each user
-        user_stats = []
-        for user in all_users:
-            user_id = user['_id']
-            
-            # Filter transcriptions assigned to this user
-            user_transcriptions = [
-                t for t in transcriptions 
-                if t.get('assigned_user_id') == user_id
-            ]
-            
-            # Calculate statistics
-            assigned_files = len(user_transcriptions)
-            annotated_files = len([t for t in user_transcriptions if t.get('status') == 'done'])
-            completed_files = len([t for t in user_transcriptions if t.get('status') == 'completed'])
-            flagged_files = len([t for t in user_transcriptions if t.get('is_flagged') == True])
-            pending_files = len([t for t in user_transcriptions if t.get('status') == 'pending' or not t.get('status')])
-            
-            user_stats.append({
-                'user': user,
-                'assignedFiles': assigned_files,
-                'annotatedFiles': annotated_files,
-                'completedFiles': completed_files,
-                'flaggedFiles': flagged_files,
-                'pendingFiles': pending_files
-            })
-        
-        # Apply search filter to users (if provided and looks like a user search, not filename)
-        # If search contains file extensions or is all numeric, it's likely a filename search
-        # In that case, don't filter users - show all users who have files matching the filename
+        # Filename search filter
         if search:
             search_lower = search.lower()
-            # Check if search looks like a filename (has extensions or is numeric like "7197389")
             looks_like_filename = (
                 any(ext in search_lower for ext in ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac']) or
-                search.replace('_', '').isdigit()
+                search.replace('_', '').replace('-', '').isdigit()
             )
             
-            # Only filter by user name/email if it doesn't look like a filename search
-            if not looks_like_filename:
-                user_stats = [
-                    stat for stat in user_stats
-                    if (
-                        search_lower in stat['user'].get('name', '').lower() or
-                        search_lower in stat['user'].get('username', '').lower() or
-                        search_lower in stat['user'].get('email', '').lower()
-                    )
+            if looks_like_filename:
+                search_regex = {'$regex': search, '$options': 'i'}
+                match_stage['$or'] = [
+                    {'transcription_data.metadata.filename': search_regex},
+                    {'transcription_data.audio_path': search_regex},
+                    {'s3_metadata.key': search_regex}
                 ]
+        
+        # Language filter
+        if language:
+            match_stage['transcription_data.language'] = language
+        
+        # Transcription type filter
+        if transcription_type:
+            match_stage['transcription_data.transcription_type'] = transcription_type
+        
+        # Date filter
+        if date_filter:
+            try:
+                from datetime import timezone, timedelta
+                date_obj = datetime.strptime(date_filter, '%Y-%m-%d')
+                ist_offset = timedelta(hours=5, minutes=30)
+                start_of_day_ist = datetime.combine(date_obj.date(), datetime.min.time())
+                start_of_day_utc = (start_of_day_ist - ist_offset).replace(tzinfo=timezone.utc)
+                end_of_day_ist = datetime.combine(date_obj.date(), datetime.max.time())
+                end_of_day_utc = (end_of_day_ist - ist_offset).replace(tzinfo=timezone.utc)
+                
+                if status == 'done':
+                    match_stage['$or'] = [
+                        {'done_at': {'$gte': start_of_day_utc, '$lte': end_of_day_utc}},
+                        {'$and': [
+                            {'done_at': {'$exists': False}},
+                            {'updated_at': {'$gte': start_of_day_utc, '$lte': end_of_day_utc}}
+                        ]}
+                    ]
+                elif status == 'completed':
+                    match_stage['$or'] = [
+                        {'completed_at': {'$gte': start_of_day_utc, '$lte': end_of_day_utc}},
+                        {'$and': [
+                            {'completed_at': {'$exists': False}},
+                            {'updated_at': {'$gte': start_of_day_utc, '$lte': end_of_day_utc}}
+                        ]}
+                    ]
+                else:
+                    match_stage['created_at'] = {'$gte': start_of_day_utc, '$lte': end_of_day_utc}
+            except ValueError:
+                print(f"⚠️  Invalid date format: {date_filter}")
+        
+        # Status filter - using the same complex logic as list_transcriptions
+        if status:
+            if status == 'flagged':
+                match_stage['$or'] = [
+                    {'is_flagged': True},
+                    {'manual_status': 'flagged'}
+                ]
+            elif status == 'double_flagged':
+                match_stage['is_double_flagged'] = True
+            elif status == 'reprocessed':
+                match_stage['has_been_reprocessed'] = True
+            elif status == 'done':
+                match_stage['$and'] = [
+                    {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
+                    {'manual_status': {'$ne': 'flagged'}},
+                    {'manual_status': {'$ne': 'completed'}},
+                    {'$or': [
+                        {'manual_status': 'done'},
+                        {'$and': [
+                            {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed']}},
+                            {'assigned_user_id': {'$ne': None}},
+                            {'user_id': {'$ne': None}},
+                            {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
+                        ]}
+                    ]}
+                ]
+            elif status == 'pending':
+                match_stage['$and'] = [
+                    {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
+                    {'manual_status': {'$ne': 'flagged'}},
+                    {'manual_status': {'$ne': 'completed'}},
+                    {'$nor': [
+                        {'manual_status': 'done'},
+                        {'$and': [
+                            {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed']}},
+                            {'assigned_user_id': {'$ne': None}},
+                            {'user_id': {'$ne': None}},
+                            {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
+                        ]}
+                    ]}
+                ]
+            elif status == 'completed':
+                match_stage['$and'] = [
+                    {'manual_status': 'completed'},
+                    {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]}
+                ]
+        
+        # Aggregation pipeline
+        pipeline = [
+            {'$match': match_stage},
+            {'$group': {
+                '_id': '$assigned_user_id',
+                'assignedFiles': {'$sum': 1},
+                'annotatedFiles': {'$sum': {
+                    '$cond': [
+                        {'$and': [
+                            {'$or': [{'$eq': ['$is_flagged', False]}, {'$not': '$is_flagged'}]},
+                            {'$ne': ['$manual_status', 'completed']},
+                            {'$or': [
+                                {'$eq': ['$manual_status', 'done']},
+                                {'$and': [
+                                    {'$not': {'$in': ['$manual_status', ['done', 'pending', 'flagged', 'completed']]}},
+                                    {'$ne': ['$assigned_user_id', None]},
+                                    {'$ne': ['$user_id', None]},
+                                    {'$eq': ['$assigned_user_id', '$user_id']}
+                                ]}
+                            ]}
+                        ]},
+                        1,
+                        0
+                    ]
+                }},
+                'completedFiles': {'$sum': {'$cond': [{'$eq': ['$manual_status', 'completed']}, 1, 0]}},
+                'flaggedFiles': {'$sum': {'$cond': [{'$eq': ['$is_flagged', True]}, 1, 0]}},
+                'pendingFiles': {'$sum': {
+                    '$cond': [
+                        {'$and': [
+                            {'$or': [{'$eq': ['$is_flagged', False]}, {'$not': '$is_flagged'}]},
+                            {'$ne': ['$manual_status', 'completed']},
+                            {'$not': {'$or': [
+                                {'$eq': ['$manual_status', 'done']},
+                                {'$and': [
+                                    {'$not': {'$in': ['$manual_status', ['done', 'pending', 'flagged', 'completed']]}},
+                                    {'$ne': ['$assigned_user_id', None]},
+                                    {'$ne': ['$user_id', None]},
+                                    {'$eq': ['$assigned_user_id', '$user_id']}
+                                ]}
+                            ]}}
+                        ]},
+                        1,
+                        0
+                    ]
+                }}
+            }}
+        ]
+        
+        # Execute aggregation
+        stats_by_user = {}
+        for result in storage_manager.collection.aggregate(pipeline):
+            user_id = result['_id']
+            if user_id:
+                stats_by_user[user_id] = {
+                    'assignedFiles': result['assignedFiles'],
+                    'annotatedFiles': result['annotatedFiles'],
+                    'completedFiles': result['completedFiles'],
+                    'flaggedFiles': result['flaggedFiles'],
+                    'pendingFiles': result['pendingFiles']
+                }
+        
+        agg_time = (time.time() - agg_start) * 1000
+        print(f"⏱️  [TEAM-STATS] Aggregation completed in {agg_time:.2f}ms for {len(stats_by_user)} users")
+        
+        # Step 3: Combine user info with stats
+        user_stats = []
+        for user_id, user_info in all_users.items():
+            stats = stats_by_user.get(user_id, {
+                'assignedFiles': 0,
+                'annotatedFiles': 0,
+                'completedFiles': 0,
+                'flaggedFiles': 0,
+                'pendingFiles': 0
+            })
+            
+            user_stats.append({
+                'user': user_info,
+                **stats
+            })
         
         # Calculate totals
         total_team_members = len(user_stats)
@@ -2990,6 +3121,9 @@ def get_team_stats():
         total_annotated_files = sum(stat['annotatedFiles'] for stat in user_stats)
         total_completed_files = sum(stat['completedFiles'] for stat in user_stats)
         total_flagged_files = sum(stat['flaggedFiles'] for stat in user_stats)
+        
+        total_time = (time.time() - start_time) * 1000
+        print(f"⏱️  [TEAM-STATS] Total time: {total_time:.2f}ms")
         
         return jsonify({
             'success': True,
@@ -3006,8 +3140,9 @@ def get_team_stats():
         })
     
     except Exception as e:
+        elapsed = (time.time() - start_time) * 1000
         error_trace = traceback.format_exc()
-        print(f"❌ Error getting team stats: {str(e)}")
+        print(f"❌ Error getting team stats (after {elapsed:.2f}ms): {str(e)}")
         print(error_trace)
         
         return jsonify({
