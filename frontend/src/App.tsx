@@ -1214,17 +1214,26 @@ function App() {
     const wordObj = transcriptionData.words[index];
     const isEdited = wordObj?.is_edited === true;
     const editedInReviewRound = wordObj?.edited_in_review_round === true;
+    const isPlaying = currentPlayingIndex === index;
     
     let classes = 'inline-block px-3 py-2 m-1 rounded border-2 cursor-pointer transition-all duration-200 hover:shadow-lg';
 
-    // Words edited in review round get orange highlighting (highest priority)
-    if (editedInReviewRound) {
+    // Words edited in review round that are playing get blue glowing border on orange background
+    if (editedInReviewRound && isPlaying) {
+      classes += ' word-edited-review-playing';
+    }
+    // Words edited in review round get orange highlighting
+    else if (editedInReviewRound) {
       classes += ' bg-orange-100 border-orange-400 text-orange-900';
+    }
+    // Edited words that are playing get blue glowing border
+    else if (isEdited && isPlaying) {
+      classes += ' word-edited-playing';
     }
     // Edited words get special highlighting
     else if (isEdited) {
       classes += ' word-edited';
-    } else if (currentPlayingIndex === index) {
+    } else if (isPlaying) {
       classes += ' word-playing';
     } else {
       const match = matchesReference(word);

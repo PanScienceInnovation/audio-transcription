@@ -64,6 +64,29 @@ body {
   opacity: 0.8;
 }
 
+.word-edited-playing {
+  @apply bg-purple-200 border-purple-500 border-2;
+  position: relative;
+  box-shadow: 0 0 10px 3px rgba(59, 130, 246, 0.8), 0 0 20px 6px rgba(59, 130, 246, 0.4);
+  animation: blueGlow 1s ease-in-out infinite;
+}
+
+.word-edited-playing::after {
+  content: '✎';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 0.7rem;
+  color: #7c3aed;
+  opacity: 0.8;
+}
+
+.word-edited-review-playing {
+  @apply bg-orange-100 border-orange-400 text-orange-900;
+  box-shadow: 0 0 10px 3px rgba(59, 130, 246, 0.8), 0 0 20px 6px rgba(59, 130, 246, 0.4);
+  animation: blueGlow 1s ease-in-out infinite;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -79,6 +102,15 @@ body {
   }
   50% {
     opacity: 0.7;
+  }
+}
+
+@keyframes blueGlow {
+  0%, 100% {
+    box-shadow: 0 0 10px 3px rgba(59, 130, 246, 0.8), 0 0 20px 6px rgba(59, 130, 246, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 15px 4px rgba(59, 130, 246, 1), 0 0 25px 8px rgba(59, 130, 246, 0.6);
   }
 }
 
