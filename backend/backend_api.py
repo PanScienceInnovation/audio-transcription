@@ -1501,17 +1501,10 @@ def save_file(transcription_id):
         else:
             computed_status = 'pending'
         
-        # Validation: Only admins can edit completed files
-        if computed_status == 'completed' and not is_admin:
-            return jsonify({
-                'success': False,
-                'error': 'Only admins can edit completed files'
-            }), 403
-        
-        # Validation: Check if user is assigned to this file (admins can edit completed files without assignment)
+        # Validation: Check if user is assigned to this file
+        # Admins can edit any file without assignment, regular users must be assigned
         assigned_user_id = current_doc.get('assigned_user_id')
-        if not (is_admin and computed_status == 'completed'):
-            # Non-admin users OR admins editing non-completed files must be assigned
+        if not is_admin:
             if not assigned_user_id or str(assigned_user_id) != str(user_id):
                 return jsonify({
                     'success': False,
@@ -1540,18 +1533,14 @@ def save_file(transcription_id):
         print(f"   Current computed_status: {computed_status}")
         print(f"   Is Flagged: {is_flagged}")
         
-        # CRITICAL: If admin is editing a completed file, ALWAYS preserve completed status
-        if is_admin and (computed_status == 'completed' or current_status == 'completed'):
-            new_status = 'completed'
-            new_review_round = 1  # Completed files always have review_round = 1
-            print(f"   → Admin editing completed file: status = 'completed', review_round = 1")
-        elif computed_status == 'completed' or current_status == 'completed':
-            # File is already completed - keep it as completed when saving
+        # CRITICAL: If file is already completed, preserve completed status when saving
+        # Both users and admins can edit and save changes to completed files
+        if computed_status == 'completed' or current_status == 'completed':
             new_status = 'completed'
             # Ensure review_round is 1 for completed files
             if review_round != 1:
                 new_review_round = 1
-            print(f"   → File already completed: status = 'completed', review_round = {new_review_round}")
+            print(f"   → Editing completed file (user: {user_id}, admin: {is_admin}): status = 'completed', review_round = {new_review_round}")
         elif review_round == 0:
             # First reviewer: status = "done", review_round stays 0
             new_status = 'done'
@@ -1649,7 +1638,13 @@ def update_transcription_by_id(transcription_id):
     """
     try:
         # Get user info from headers
-        _, is_admin = get_user_from_request()
+        user_id, is_admin = get_user_from_request()
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'User ID is required. Please provide X-User-ID header.'
+            }), 400
         
         data = request.get_json()
         
@@ -1660,7 +1655,6 @@ def update_transcription_by_id(transcription_id):
             }), 400
         
         transcription_data = data['transcription_data']
-        user_id = data.get('user_id')  # Get user_id from request
         
         # Get current file document to check its status
         from bson import ObjectId
@@ -1698,13 +1692,18 @@ def update_transcription_by_id(transcription_id):
         else:
             computed_status = 'pending'
         
-        # Validation: Only admins can edit completed files
-        if computed_status == 'completed' and not is_admin:
-            return jsonify({
-                'success': False,
-                'error': 'Only admins can edit completed files'
-            }), 403
+        # Validation: Check if user is assigned to this file
+        # Admins can edit any file without assignment, regular users must be assigned
+        assigned_user_id = current_doc.get('assigned_user_id')
+        if not is_admin:
+            if not assigned_user_id or str(assigned_user_id) != str(user_id):
+                return jsonify({
+                    'success': False,
+                    'error': 'You are not assigned to this file'
+                }), 403
         
+        # Allow both users and admins to edit completed files
+        # The update will overwrite the previous transcription data
         result = storage_manager.update_transcription(transcription_id, transcription_data, user_id=user_id)
         
         if result['success']:
@@ -3208,23 +3207,56 @@ def download_done_transcriptions():
         
         def format_timestamp(ts):
             """
-            Format timestamp to include microseconds (add '000' if not present).
-            Input formats: "0:00:01.037" or "0:00:01.037000"
-            Output format: "0:00:01.037000"
+            Format timestamp to strict HH:MM:SS.Ms format with zero-padding.
+            Input formats: 
+                - "0:01.804" (M:SS.Ms) -> "00:00:01.804000"
+                - "1:00.021" (M:SS.Ms) -> "00:01:00.021000"
+                - "0:00:01.037" (H:MM:SS.Ms) -> "00:00:01.037000"
+                - "0:00:01.037000" (H:MM:SS.Ms) -> "00:00:01.037000"
+            Output format: "00:00:00.519350" (HH:MM:SS with 6-digit microseconds)
+            All components are zero-padded to ensure strict format.
             """
             if not ts:
                 return ts
-            # If already has 6 digits after decimal, return as is
+            
+            # Split time and microseconds
             if '.' in ts:
-                parts = ts.split('.')
-                if len(parts) == 2:
-                    seconds_part = parts[0]
-                    decimal_part = parts[1]
-                    # Pad to 6 digits if needed
-                    if len(decimal_part) < 6:
-                        decimal_part = decimal_part.ljust(6, '0')
-                    return f"{seconds_part}.{decimal_part}"
-            return ts
+                time_part, micro_part = ts.split('.', 1)
+            else:
+                time_part = ts
+                micro_part = '0'
+            
+            # Parse time components
+            time_components = time_part.split(':')
+            
+            if len(time_components) == 2:
+                # Format: M:SS (e.g., "0:01.804" or "1:00.021")
+                minutes = time_components[0]
+                seconds = time_components[1]
+                hours = '0'
+            elif len(time_components) == 3:
+                # Format: H:MM:SS or HH:MM:SS (e.g., "0:00:01.037")
+                hours = time_components[0]
+                minutes = time_components[1]
+                seconds = time_components[2]
+            else:
+                # If format is unexpected, return as-is
+                return ts
+            
+            # Zero-pad hours to 2 digits (HH)
+            hours = hours.zfill(2)
+            # Ensure minutes are 2 digits (MM)
+            minutes = minutes.zfill(2)
+            # Ensure seconds are 2 digits (SS)
+            seconds = seconds.zfill(2)
+            
+            # Format microseconds to exactly 6 digits (Ms)
+            if len(micro_part) < 6:
+                micro_part = micro_part.ljust(6, '0')
+            elif len(micro_part) > 6:
+                micro_part = micro_part[:6]
+            
+            return f"{hours}:{minutes}:{seconds}.{micro_part}"
         
         def transform_transcription_data(doc, transcription_data):
             """
@@ -3423,23 +3455,56 @@ def download_completed_transcriptions():
         
         def format_timestamp(ts):
             """
-            Format timestamp to include microseconds (add '000' if not present).
-            Input formats: "0:00:01.037" or "0:00:01.037000"
-            Output format: "0:00:01.037000"
+            Format timestamp to strict HH:MM:SS.Ms format with zero-padding.
+            Input formats: 
+                - "0:01.804" (M:SS.Ms) -> "00:00:01.804000"
+                - "1:00.021" (M:SS.Ms) -> "00:01:00.021000"
+                - "0:00:01.037" (H:MM:SS.Ms) -> "00:00:01.037000"
+                - "0:00:01.037000" (H:MM:SS.Ms) -> "00:00:01.037000"
+            Output format: "00:00:00.519350" (HH:MM:SS with 6-digit microseconds)
+            All components are zero-padded to ensure strict format.
             """
             if not ts:
                 return ts
-            # If already has 6 digits after decimal, return as is
+            
+            # Split time and microseconds
             if '.' in ts:
-                parts = ts.split('.')
-                if len(parts) == 2:
-                    seconds_part = parts[0]
-                    decimal_part = parts[1]
-                    # Pad to 6 digits if needed
-                    if len(decimal_part) < 6:
-                        decimal_part = decimal_part.ljust(6, '0')
-                    return f"{seconds_part}.{decimal_part}"
-            return ts
+                time_part, micro_part = ts.split('.', 1)
+            else:
+                time_part = ts
+                micro_part = '0'
+            
+            # Parse time components
+            time_components = time_part.split(':')
+            
+            if len(time_components) == 2:
+                # Format: M:SS (e.g., "0:01.804" or "1:00.021")
+                minutes = time_components[0]
+                seconds = time_components[1]
+                hours = '0'
+            elif len(time_components) == 3:
+                # Format: H:MM:SS or HH:MM:SS (e.g., "0:00:01.037")
+                hours = time_components[0]
+                minutes = time_components[1]
+                seconds = time_components[2]
+            else:
+                # If format is unexpected, return as-is
+                return ts
+            
+            # Zero-pad hours to 2 digits (HH)
+            hours = hours.zfill(2)
+            # Ensure minutes are 2 digits (MM)
+            minutes = minutes.zfill(2)
+            # Ensure seconds are 2 digits (SS)
+            seconds = seconds.zfill(2)
+            
+            # Format microseconds to exactly 6 digits (Ms)
+            if len(micro_part) < 6:
+                micro_part = micro_part.ljust(6, '0')
+            elif len(micro_part) > 6:
+                micro_part = micro_part[:6]
+            
+            return f"{hours}:{minutes}:{seconds}.{micro_part}"
         
         def transform_transcription_data(doc, transcription_data):
             """
