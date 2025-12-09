@@ -3058,7 +3058,16 @@ def get_team_stats():
                         0
                     ]
                 }},
-                'completedFiles': {'$sum': {'$cond': [{'$eq': ['$manual_status', 'completed']}, 1, 0]}},
+                'completedFiles': {'$sum': {
+                    '$cond': [
+                        {'$and': [
+                            {'$eq': ['$manual_status', 'completed']},
+                            {'$or': [{'$eq': ['$is_flagged', False]}, {'$not': '$is_flagged'}]}
+                        ]},
+                        1,
+                        0
+                    ]
+                }},
                 'flaggedFiles': {'$sum': {'$cond': [{'$eq': ['$is_flagged', True]}, 1, 0]}},
                 'pendingFiles': {'$sum': {
                     '$cond': [
