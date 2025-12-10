@@ -92,9 +92,11 @@ function AdminPanel() {
   const [dateFilter, setDateFilter] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [assignedUserFilter, setAssignedUserFilter] = useState<string>('');
+  const [originalAssigneeFilter, setOriginalAssigneeFilter] = useState<string>('');
   const [flaggedFilter, setFlaggedFilter] = useState<string>('');
   const [downloading, setDownloading] = useState(false);
   const [downloadingCompleted, setDownloadingCompleted] = useState(false);
+  const [downloadingSelectedCompleted, setDownloadingSelectedCompleted] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [flagging, setFlagging] = useState<string | null>(null);
@@ -121,7 +123,7 @@ function AdminPanel() {
   // Reset to page 1 when search term or filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, flaggedFilter]);
+  }, [searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, originalAssigneeFilter, flaggedFilter]);
 
   // Reload data when page changes or filters change
   useEffect(() => {
@@ -129,7 +131,7 @@ function AdminPanel() {
       loadData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, flaggedFilter, isAdmin]);
+  }, [currentPage, searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, originalAssigneeFilter, flaggedFilter, isAdmin]);
 
   const loadData = async () => {
     setLoading(true);
@@ -158,6 +160,7 @@ function AdminPanel() {
       if (dateFilter) params.append('date', dateFilter);
       if (statusFilter) params.append('status', statusFilter);
       if (assignedUserFilter) params.append('assigned_user', assignedUserFilter);
+      if (originalAssigneeFilter) params.append('original_assignee', originalAssigneeFilter);
       if (flaggedFilter) params.append('flagged', flaggedFilter);
 
       // Load transcriptions with pagination and filters
@@ -483,6 +486,61 @@ function AdminPanel() {
     }
   };
 
+  const handleDownloadSelectedCompleted = async () => {
+    if (selectedTranscriptions.size === 0) {
+      setMessage({ type: 'error', text: 'Please select at least one file to download' });
+      return;
+    }
+
+    setDownloadingSelectedCompleted(true);
+    try {
+      const config = getAxiosConfig();
+      const selectedIds = Array.from(selectedTranscriptions);
+
+      // Make request to download endpoint with responseType: 'blob' for binary data
+      const response = await axios.post(
+        `${API_BASE_URL}/api/admin/transcriptions/download-selected-completed`,
+        { transcription_ids: selectedIds },
+        {
+          ...config,
+          responseType: 'blob'
+        }
+      );
+
+      // Create a blob URL and trigger download
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+
+      // Get filename from Content-Disposition header or use default
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = 'selected_completed_transcriptions.zip';
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setMessage({ type: 'success', text: `Downloaded ${selectedIds.length} selected completed file(s)` });
+    } catch (error: any) {
+      console.error('❌ Error downloading selected completed transcriptions:', error);
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to download selected completed transcriptions';
+      setMessage({ type: 'error', text: errorMessage });
+    } finally {
+      setDownloadingSelectedCompleted(false);
+    }
+  };
+
   const handleDeleteTranscription = async (transcriptionId: string) => {
     const confirmed = window.confirm(
       'Are you sure you want to delete this transcription?\n\n' +
@@ -786,7 +844,7 @@ function AdminPanel() {
               </button>
               <button
                 onClick={handleDownloadDoneTranscriptions}
-                disabled={downloading || downloadingCompleted}
+                disabled={downloading || downloadingCompleted || downloadingSelectedCompleted}
                 className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 title="Download all done transcriptions as ZIP"
               >
@@ -804,7 +862,7 @@ function AdminPanel() {
               </button>
               <button
                 onClick={handleDownloadCompletedTranscriptions}
-                disabled={downloadingCompleted || downloading}
+                disabled={downloadingCompleted || downloading || downloadingSelectedCompleted}
                 className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 title="Download all completed transcriptions as ZIP"
               >
@@ -816,7 +874,7 @@ function AdminPanel() {
                 ) : (
                   <>
                     <Download className="h-5 w-5" />
-                    <span className="hidden sm:inline">Download Completed Files</span>
+                    <span className="hidden sm:inline">Download All Completed Files</span>
                   </>
                 )}
               </button>
@@ -963,7 +1021,7 @@ function AdminPanel() {
               </div>
 
               {/* First Row: Search and Basic Filters */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-4">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
                   <input
@@ -1004,12 +1062,27 @@ function AdminPanel() {
                   value={assignedUserFilter}
                   onChange={(e) => setAssignedUserFilter(e.target.value)}
                   className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                  title="Filter by current assignee"
                 >
-                  <option value="">All Users</option>
-                  <option value="unassigned">Unassigned</option>
+                  <option value="">Current Assignee: All</option>
+                  <option value="unassigned">Current Assignee: Unassigned</option>
                   {users.map((user) => (
                     <option key={user._id} value={user._id}>
-                      {user.name || user.username}
+                      Current: {user.name || user.username}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={originalAssigneeFilter}
+                  onChange={(e) => setOriginalAssigneeFilter(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                  title="Filter by original assignee"
+                >
+                  <option value="">Original Assignee: All</option>
+                  <option value="unassigned">Original Assignee: Unassigned</option>
+                  {users.map((user) => (
+                    <option key={user._id} value={user._id}>
+                      Original: {user.name || user.username}
                     </option>
                   ))}
                 </select>
@@ -1032,7 +1105,7 @@ function AdminPanel() {
                 </div>
               </div>
 
-              {/* Second Row: User and Flag Filters */}
+              {/* Second Row: Clear Filters Button */}
               <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 ${statusFilter === 'done' && dateFilter ? 'mb-6' : 'mb-4'}`}>
                 {/* <select
                   value={assignedUserFilter}
@@ -1074,7 +1147,7 @@ function AdminPanel() {
                   )}
                 </div> */}
                 {/* Clear Filters Button */}
-                {(searchTerm || languageFilter || dateFilter || statusFilter || assignedUserFilter) && (
+                {(searchTerm || languageFilter || dateFilter || statusFilter || assignedUserFilter || originalAssigneeFilter) && (
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => {
@@ -1083,6 +1156,7 @@ function AdminPanel() {
                         setDateFilter('');
                         setStatusFilter('');
                         setAssignedUserFilter('');
+                        setOriginalAssigneeFilter('');
                         setFlaggedFilter('');
                       }}
                       className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
@@ -1107,6 +1181,24 @@ function AdminPanel() {
                   </span>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={handleDownloadSelectedCompleted}
+                    disabled={downloadingSelectedCompleted || downloading || downloadingCompleted || bulkAssigning || bulkReassigning || bulkDeleting}
+                    className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    title="Download selected completed files as ZIP"
+                  >
+                    {downloadingSelectedCompleted ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Downloading...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="h-4 w-4" />
+                        Download Selected Completed
+                      </>
+                    )}
+                  </button>
                   <select
                     value={bulkAssignUserId}
                     onChange={(e) => setBulkAssignUserId(e.target.value)}

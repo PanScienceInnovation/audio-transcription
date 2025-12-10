@@ -67,34 +67,53 @@ class StorageManager:
             # Create reprocessed files collection
             self.reprocessed_collection = self.db['reprocessed_files']
             
+            # Get telugu_transcriptions collection for indexing
+            telugu_collection = self.db.get_collection('telugu_transcriptions')
+            
             # Create indexes for better query performance
             try:
-                # Basic indexes
-                self.collection.create_index('created_at')
-                self.collection.create_index('updated_at')
-                self.collection.create_index('user_id')
-                self.collection.create_index('assigned_user_id')  # Index for filtering by assigned user
+                # Helper function to create indexes on a collection
+                def create_collection_indexes(collection, collection_name):
+                    # Basic indexes
+                    collection.create_index('created_at')
+                    collection.create_index('updated_at')
+                    collection.create_index('user_id')
+                    collection.create_index('assigned_user_id')  # Index for filtering by assigned user
+                    
+                    # Flag and reprocess indexes
+                    collection.create_index('is_flagged')
+                    collection.create_index('is_double_flagged')
+                    collection.create_index('has_been_reprocessed')
+                    collection.create_index('manual_status')
+                    
+                    # Compound indexes for common query patterns
+                    collection.create_index([('user_id', 1), ('created_at', -1)])  # User's transcriptions by date
+                    collection.create_index([('assigned_user_id', 1), ('created_at', -1)])  # Assigned user queries
+                    collection.create_index([('is_flagged', 1), ('created_at', -1)])  # Flagged files by date
+                    collection.create_index([('is_double_flagged', 1), ('created_at', -1)])  # Double flagged by date
+                    collection.create_index([('has_been_reprocessed', 1), ('created_at', -1)])  # Reprocessed by date
+                    collection.create_index([('manual_status', 1), ('created_at', -1)])  # Status queries
+                    collection.create_index([('transcription_data.language', 1)])  # Language filter
+                    collection.create_index([('transcription_data.transcription_type', 1)])  # Type filter
+                    
+                    # Search indexes for filename fields (for regex search)
+                    collection.create_index([('transcription_data.metadata.filename', 1)])  # Filename search
+                    collection.create_index([('s3_metadata.key', 1)])  # S3 key search
+                    collection.create_index([('transcription_data.audio_path', 1)])  # Audio path search
+                    
+                    # Additional compound indexes for common filter combinations
+                    collection.create_index([('transcription_data.language', 1), ('created_at', -1)])  # Language + date
+                    collection.create_index([('assigned_user_id', 1), ('manual_status', 1), ('created_at', -1)])  # User + status + date
+                    collection.create_index([('is_flagged', 1), ('manual_status', 1), ('created_at', -1)])  # Flagged + status + date
+                    collection.create_index([('transcription_data.language', 1), ('manual_status', 1)])  # Language + status
+                    
+                    print(f"   {collection_name}: All indexes created")
                 
-                # Flag and reprocess indexes
-                self.collection.create_index('is_flagged')
-                self.collection.create_index('is_double_flagged')
-                self.collection.create_index('has_been_reprocessed')
-                self.collection.create_index('manual_status')
+                # Create indexes for main collection
+                create_collection_indexes(self.collection, 'Main collection (transcriptions)')
                 
-                # Compound indexes for common query patterns
-                self.collection.create_index([('user_id', 1), ('created_at', -1)])  # User's transcriptions by date
-                self.collection.create_index([('assigned_user_id', 1), ('created_at', -1)])  # Assigned user queries
-                self.collection.create_index([('is_flagged', 1), ('created_at', -1)])  # Flagged files by date
-                self.collection.create_index([('is_double_flagged', 1), ('created_at', -1)])  # Double flagged by date
-                self.collection.create_index([('has_been_reprocessed', 1), ('created_at', -1)])  # Reprocessed by date
-                self.collection.create_index([('manual_status', 1), ('created_at', -1)])  # Status queries
-                self.collection.create_index([('transcription_data.language', 1)])  # Language filter
-                self.collection.create_index([('transcription_data.transcription_type', 1)])  # Type filter
-                
-                # Search indexes for filename fields (for regex search)
-                self.collection.create_index([('transcription_data.metadata.filename', 1)])  # Filename search
-                self.collection.create_index([('s3_metadata.key', 1)])  # S3 key search
-                self.collection.create_index([('transcription_data.audio_path', 1)])  # Audio path search
+                # Create indexes for telugu_transcriptions collection
+                create_collection_indexes(telugu_collection, 'Telugu collection (telugu_transcriptions)')
                 
                 # Create indexes for version history collection
                 self.version_history_collection.create_index('transcription_id')
@@ -107,6 +126,7 @@ class StorageManager:
                 
                 print(f"✅ Created indexes on all key fields for fast queries")
                 print(f"   Main collection: created_at, user_id, assigned_user_id, is_flagged, is_double_flagged, has_been_reprocessed, manual_status + compound indexes")
+                print(f"   Telugu collection: Same indexes as main collection for optimal performance")
                 print(f"   Version history: transcription_id + compound indexes")
                 print(f"   Reprocessed files: created_at, original_transcription_id + compound indexes")
             except Exception as e:
@@ -473,8 +493,13 @@ class StorageManager:
                 print(f"❌ Invalid transcription ID format: {document_id}")
                 return None
             
-            # Get document by ID
+            # Get document by ID (check both collections)
             document = self.collection.find_one({'_id': obj_id})
+            
+            # If not found in main collection, check telugu_transcriptions collection
+            if not document:
+                telugu_collection = self.db.get_collection('telugu_transcriptions')
+                document = telugu_collection.find_one({'_id': obj_id})
             
             if not document:
                 return None
@@ -884,8 +909,8 @@ class StorageManager:
     def list_transcriptions(self, limit: int = 100, skip: int = 0, user_id: Optional[str] = None, is_admin: bool = False,
                            search: Optional[str] = None, language: Optional[str] = None, 
                            date: Optional[str] = None, status: Optional[str] = None,
-                           assigned_user: Optional[str] = None, flagged: Optional[str] = None,
-                           transcription_type: Optional[str] = None) -> Dict[str, Any]:
+                           assigned_user: Optional[str] = None, original_assignee: Optional[str] = None,
+                           flagged: Optional[str] = None, transcription_type: Optional[str] = None) -> Dict[str, Any]:
         """
         List transcriptions from MongoDB with filtering and pagination.
         Regular users can only see transcriptions assigned to them.
@@ -900,7 +925,8 @@ class StorageManager:
             language: Filter by language (exact match)
             date: Filter by date (YYYY-MM-DD format, matches created_at date)
             status: Filter by status ('done', 'pending', 'flagged')
-            assigned_user: Filter by assigned user ID (or 'unassigned' for None)
+            assigned_user: Filter by current assigned user ID (or 'unassigned' for None)
+            original_assignee: Filter by original assignee user ID (or 'unassigned' for None)
             flagged: Filter by flagged status ('flagged' or 'not-flagged')
             transcription_type: Filter by transcription type ('words' or 'phrases')
             
@@ -1097,7 +1123,7 @@ class StorageManager:
                     # This will be handled in post-filtering since it requires checking review_history
                     pass
             
-            # Assigned user filter
+            # Assigned user filter (current assignee)
             if assigned_user:
                 if assigned_user == 'unassigned':
                     additional_filters.append({
@@ -1108,6 +1134,10 @@ class StorageManager:
                     })
                 else:
                     additional_filters.append({'assigned_user_id': str(assigned_user)})
+            
+            # Original assignee filter - this requires post-filtering since we need to check review_history
+            # We'll handle this after fetching documents
+            needs_original_assignee_filter = bool(original_assignee)
             
             # Flagged filter
             if flagged == 'flagged':
@@ -1135,7 +1165,8 @@ class StorageManager:
             # Some statuses require post-filtering/sorting:
             # - 'assigned_for_review': needs to check review_history
             # - 'done': needs sorting to prioritize actual 'done' over 'assigned_for_review'
-            needs_post_filtering = (status == 'assigned_for_review')
+            # - 'original_assignee': needs to check review_history to find original assignee
+            needs_post_filtering = (status == 'assigned_for_review') or needs_original_assignee_filter
             needs_post_sorting = (status == 'done')  # Need to sort after computing status
             
             # Calculate fetch size: if we need post-filtering or post-sorting, fetch all matching documents
@@ -1143,8 +1174,9 @@ class StorageManager:
             # For done status, fetch all documents to enable proper sorting across pages
             if needs_post_sorting:
                 # For 'done' status, we need to fetch ALL matching documents to sort properly
-                # Get the count first to know how many to fetch
-                count_for_done = self.collection.count_documents(query_filter)
+                # Get the count first to know how many to fetch (from both collections)
+                telugu_collection = self.db.get_collection('telugu_transcriptions')
+                count_for_done = self.collection.count_documents(query_filter) + telugu_collection.count_documents(query_filter)
                 fetch_limit = count_for_done  # Fetch all matching documents
                 fetch_skip = 0
                 print(f"📋 'done' filter detected - fetching all {fetch_limit} matching documents for proper sorting")
@@ -1194,14 +1226,24 @@ class StorageManager:
             }
             
             find_start = time.time()
-            cursor = self.collection.find(query_filter, projection).sort('created_at', -1).skip(fetch_skip).limit(fetch_limit)
+            
+            # Query both collections: transcriptions and telugu_transcriptions
+            telugu_collection = self.db.get_collection('telugu_transcriptions')
+            
+            # Query main collection
+            cursor_main = self.collection.find(query_filter, projection).sort('created_at', -1)
+            # Query telugu collection
+            cursor_telugu = telugu_collection.find(query_filter, projection).sort('created_at', -1)
+            
             find_time = (time.time() - find_start) * 1000
             print(f"⏱️  [TIMING] MongoDB find() query took {find_time:.2f}ms (fetch_limit={fetch_limit}, fetch_skip={fetch_skip})")
             
-            # Process documents
+            # Process documents from both collections
             process_start = time.time()
             transcriptions = []
-            for doc in cursor:
+            
+            # Process documents from main collection
+            for doc in cursor_main:
                 # Convert ObjectId to string
                 doc['_id'] = str(doc['_id'])
                 # Convert datetime to ISO format
@@ -1335,6 +1377,36 @@ class StorageManager:
                 if status == 'assigned_for_review' and computed_status != status:
                     continue
                 
+                # Apply original assignee filter (post-filtering)
+                if needs_original_assignee_filter:
+                    # Get original assignee from review_history
+                    review_history = doc.get('review_history', [])
+                    original_assignee_id = None
+                    
+                    # Find the first reassign action to get the original assignee
+                    reassign_action = None
+                    for entry in review_history:
+                        if entry.get('action') == 'reassign':
+                            reassign_action = entry
+                            break
+                    
+                    if reassign_action and reassign_action.get('previous_assigned_user_id'):
+                        original_assignee_id = str(reassign_action.get('previous_assigned_user_id'))
+                    else:
+                        # If no reassign action, current assigned_user_id is the original
+                        current_assigned = doc.get('assigned_user_id')
+                        original_assignee_id = str(current_assigned) if current_assigned else None
+                    
+                    # Filter by original assignee
+                    if original_assignee == 'unassigned':
+                        # Match if original assignee is None or doesn't exist
+                        if original_assignee_id:
+                            continue
+                    else:
+                        # Match if original assignee matches the filter
+                        if not original_assignee_id or str(original_assignee_id) != str(original_assignee):
+                            continue
+                
                 # Search filter is now handled at database level via regex
                 # No need for post-filtering on search term
                 
@@ -1365,8 +1437,145 @@ class StorageManager:
                 }
                 transcriptions.append(summary)
             
+            # Process documents from telugu collection (same logic as above)
+            for doc in cursor_telugu:
+                # Convert ObjectId to string
+                doc['_id'] = str(doc['_id'])
+                # Convert datetime to ISO format
+                if 'created_at' in doc:
+                    doc['created_at'] = doc['created_at'].isoformat()
+                if 'updated_at' in doc:
+                    doc['updated_at'] = doc['updated_at'].isoformat()
+                
+                # Extract summary info
+                transcription_data = doc.get('transcription_data', {})
+                s3_metadata = doc.get('s3_metadata', {})
+                metadata = transcription_data.get('metadata', {})
+                
+                # Priority order for filename:
+                display_filename = ''
+                if metadata.get('filename'):
+                    display_filename = metadata.get('filename')
+                else:
+                    audio_path = transcription_data.get('audio_path') or metadata.get('audio_path', '')
+                    if audio_path:
+                        if '/' in audio_path:
+                            display_filename = audio_path.split('/')[-1]
+                        else:
+                            display_filename = audio_path
+                    elif s3_metadata.get('key'):
+                        s3_key = s3_metadata.get('key', '')
+                        s3_filename = s3_key.split('/')[-1] if '/' in s3_key else s3_key
+                        import re
+                        match = re.match(r'^\d{8}_\d{6}_(.+)$', s3_filename)
+                        if match:
+                            display_filename = match.group(1)
+                        else:
+                            display_filename = s3_filename
+                    else:
+                        display_filename = ''
+                
+                edited_words_count = transcription_data.get('edited_words_count', 0)
+                review_round_edited_words_count = transcription_data.get('review_round_edited_words_count', 0)
+                
+                # Determine status (same logic as above)
+                is_flagged = doc.get('is_flagged', False)
+                assigned_user_id = doc.get('assigned_user_id')
+                doc_user_id = doc.get('user_id')
+                manual_status = doc.get('manual_status')
+                
+                if is_flagged:
+                    computed_status = 'flagged'
+                elif manual_status == 'completed':
+                    computed_status = 'completed'
+                elif assigned_user_id:
+                    review_history = doc.get('review_history', [])
+                    has_reassign_action = any(entry.get('action') == 'reassign' for entry in review_history)
+                    
+                    is_last_saver_admin = False
+                    if doc_user_id:
+                        try:
+                            from bson import ObjectId
+                            users_collection = self.db['users']
+                            user_doc = users_collection.find_one({'_id': ObjectId(doc_user_id)})
+                            if user_doc:
+                                is_last_saver_admin = user_doc.get('is_admin', False)
+                        except Exception:
+                            pass
+                    
+                    if has_reassign_action and doc_user_id and str(assigned_user_id) != str(doc_user_id) and not is_last_saver_admin:
+                        computed_status = 'assigned_for_review'
+                    elif manual_status and manual_status in ['done', 'pending', 'flagged']:
+                        computed_status = manual_status
+                    elif doc_user_id and str(assigned_user_id) == str(doc_user_id):
+                        computed_status = 'done'
+                    else:
+                        computed_status = 'pending'
+                elif manual_status and manual_status in ['done', 'pending', 'flagged']:
+                    computed_status = manual_status
+                else:
+                    computed_status = 'pending'
+                
+                # Apply status filter
+                if status == 'assigned_for_review' and computed_status != status:
+                    continue
+                
+                # Apply original assignee filter
+                if needs_original_assignee_filter:
+                    review_history = doc.get('review_history', [])
+                    original_assignee_id = None
+                    
+                    reassign_action = None
+                    for entry in review_history:
+                        if entry.get('action') == 'reassign':
+                            reassign_action = entry
+                            break
+                    
+                    if reassign_action and reassign_action.get('previous_assigned_user_id'):
+                        original_assignee_id = str(reassign_action.get('previous_assigned_user_id'))
+                    else:
+                        current_assigned = doc.get('assigned_user_id')
+                        original_assignee_id = str(current_assigned) if current_assigned else None
+                    
+                    if original_assignee == 'unassigned':
+                        if original_assignee_id:
+                            continue
+                    else:
+                        if not original_assignee_id or str(original_assignee_id) != str(original_assignee):
+                            continue
+                
+                summary = {
+                    '_id': doc['_id'],
+                    'created_at': doc.get('created_at'),
+                    'updated_at': doc.get('updated_at'),
+                    'transcription_type': transcription_data.get('transcription_type', 'words'),
+                    'language': transcription_data.get('language', 'Unknown'),
+                    'total_words': transcription_data.get('total_words', 0),
+                    'total_phrases': transcription_data.get('total_phrases', 0),
+                    'audio_duration': transcription_data.get('audio_duration', 0),
+                    's3_url': s3_metadata.get('url', ''),
+                    'filename': display_filename,
+                    'user_id': doc.get('user_id'),
+                    'assigned_user_id': doc.get('assigned_user_id'),
+                    'status': computed_status,
+                    'is_flagged': is_flagged,
+                    'is_double_flagged': doc.get('is_double_flagged', False),
+                    'flag_reason': doc.get('flag_reason'),
+                    'has_been_reprocessed': doc.get('has_been_reprocessed', False),
+                    'reprocessed_document_id': doc.get('reprocessed_document_id'),
+                    'edited_words_count': edited_words_count,
+                    'review_round_edited_words_count': review_round_edited_words_count,
+                    'remarks': doc.get('remarks'),
+                    'review_round': doc.get('review_round', 0),
+                    'review_history': doc.get('review_history', [])
+                }
+                transcriptions.append(summary)
+            
             process_time = (time.time() - process_start) * 1000
             print(f"⏱️  [TIMING] Document processing took {process_time:.2f}ms (processed {len(transcriptions)} documents before pagination)")
+            
+            # Sort all transcriptions by created_at descending (newest first) before applying status-based sorting
+            transcriptions.sort(key=lambda x: x.get('created_at', ''), reverse=True)
             
             # When filtering by 'done', sort to prioritize actual 'done' files over 'assigned_for_review' files
             # This ensures done files appear first across all pages
@@ -1388,14 +1597,15 @@ class StorageManager:
                 operation = "post-sorting" if needs_post_sorting else "post-filtering"
                 print(f"📄 Applied {operation} pagination: showing {len(transcriptions)} of {total_count} results (skip={skip}, limit={limit})")
             else:
-                # Get total count for non-post-filtered queries
+                # Get total count for non-post-filtered queries (from both collections)
                 count_start = time.time()
+                telugu_collection = self.db.get_collection('telugu_transcriptions')
                 if is_admin and query_filter == {}:
                     # For admin users querying all documents, use estimated_document_count (much faster, O(1))
-                    total_count = self.collection.estimated_document_count()
+                    total_count = self.collection.estimated_document_count() + telugu_collection.estimated_document_count()
                 else:
                     # For filtered queries, use count_documents (exact count)
-                    total_count = self.collection.count_documents(query_filter)
+                    total_count = self.collection.count_documents(query_filter) + telugu_collection.count_documents(query_filter)
                 count_time = (time.time() - count_start) * 1000
                 print(f"📊 Total count: {total_count} (count took {count_time:.2f}ms)")
             
@@ -1473,7 +1683,10 @@ class StorageManager:
                 'transcription_data.audio_duration': 1
             }
             
-            cursor = self.collection.find(query_filter, projection)
+            # Query both collections: transcriptions and telugu_transcriptions
+            cursor_main = self.collection.find(query_filter, projection)
+            telugu_collection = self.db.get_collection('telugu_transcriptions')
+            cursor_telugu = telugu_collection.find(query_filter, projection)
             
             # Initialize counters
             total_count = 0
@@ -1486,8 +1699,56 @@ class StorageManager:
             total_done_duration = 0.0  # Total duration in seconds
             total_completed_duration = 0.0  # Total duration for completed files
             
-            # Process each document to determine status
-            for doc in cursor:
+            # Process each document to determine status (from main collection)
+            for doc in cursor_main:
+                total_count += 1
+                
+                # Get audio duration if available
+                transcription_data = doc.get('transcription_data', {})
+                audio_duration = transcription_data.get('audio_duration', 0) or 0
+                
+                # Track double flagged and reprocessed separately
+                is_double_flagged = doc.get('is_double_flagged', False)
+                has_been_reprocessed = doc.get('has_been_reprocessed', False)
+                
+                if is_double_flagged:
+                    double_flagged_count += 1
+                if has_been_reprocessed:
+                    reprocessed_count += 1
+                
+                # Determine status (same logic as in list_transcriptions)
+                is_flagged = doc.get('is_flagged', False)
+                assigned_user_id = doc.get('assigned_user_id')
+                doc_user_id = doc.get('user_id')
+                manual_status = doc.get('manual_status')
+                review_round = doc.get('review_round', 0)
+                
+                # Flagged status has highest priority
+                if is_flagged:
+                    status = 'flagged'
+                # Use manual_status if set (including 'completed')
+                elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed']:
+                    status = manual_status
+                # Status is "done" only if assigned AND the user_id matches assigned_user_id
+                elif assigned_user_id and doc_user_id and str(assigned_user_id) == str(doc_user_id):
+                    status = 'done'
+                else:
+                    status = 'pending'
+                
+                # Count by status and accumulate duration for done/completed files
+                if status == 'completed':
+                    completed_count += 1
+                    total_completed_duration += float(audio_duration)
+                elif status == 'done':
+                    done_count += 1
+                    total_done_duration += float(audio_duration)
+                elif status == 'flagged':
+                    flagged_count += 1
+                else:
+                    pending_count += 1
+            
+            # Process each document to determine status (from telugu collection)
+            for doc in cursor_telugu:
                 total_count += 1
                 
                 # Get audio duration if available

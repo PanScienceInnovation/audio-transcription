@@ -1304,7 +1304,8 @@ def list_transcriptions():
         - language: Filter by language (exact match)
         - date: Filter by date (YYYY-MM-DD format, matches created_at date)
         - status: Filter by status ('done', 'pending', 'flagged')
-        - assigned_user: Filter by assigned user ID (or 'unassigned' for None)
+        - assigned_user: Filter by current assigned user ID (or 'unassigned' for None)
+        - original_assignee: Filter by original assignee user ID (or 'unassigned' for None)
         - flagged: Filter by flagged status ('flagged' or 'not-flagged')
         - transcription_type: Filter by transcription type ('words' or 'phrases')
     """
@@ -1317,10 +1318,11 @@ def list_transcriptions():
         date = request.args.get('date', '').strip() or None
         status = request.args.get('status', '').strip() or None
         assigned_user = request.args.get('assigned_user', '').strip() or None
+        original_assignee = request.args.get('original_assignee', '').strip() or None
         flagged = request.args.get('flagged', '').strip() or None
         transcription_type = request.args.get('transcription_type', '').strip() or None
         
-        print(f"⏱️  [TIMING] list_transcriptions started - limit={limit}, skip={skip}, filters={{search={search}, language={language}, date={date}, status={status}, assigned_user={assigned_user}, flagged={flagged}, transcription_type={transcription_type}}}")
+        print(f"⏱️  [TIMING] list_transcriptions started - limit={limit}, skip={skip}, filters={{search={search}, language={language}, date={date}, status={status}, assigned_user={assigned_user}, original_assignee={original_assignee}, flagged={flagged}, transcription_type={transcription_type}}}")
         
         # Get user info from headers
         user_id, is_admin = get_user_from_request()
@@ -1348,6 +1350,7 @@ def list_transcriptions():
             date=date,
             status=status,
             assigned_user=assigned_user,
+            original_assignee=original_assignee,
             flagged=flagged,
             transcription_type=transcription_type
         )
@@ -3662,6 +3665,291 @@ def download_completed_transcriptions():
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"❌ Error downloading completed transcriptions: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/admin/transcriptions/download-selected-completed', methods=['POST'])
+def download_selected_completed_transcriptions():
+    """
+    Download selected transcriptions with status 'completed' as a zip file (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    Body:
+        {
+            "transcription_ids": ["id1", "id2", ...]
+        }
+    
+    Returns:
+        ZIP file containing JSON transcription files for selected 'completed' transcriptions
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        if not storage_manager.collection:
+            return jsonify({
+                'success': False,
+                'error': 'MongoDB not initialized'
+            }), 500
+        
+        # Get transcription IDs from request
+        data = request.get_json()
+        if not data or 'transcription_ids' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'transcription_ids is required'
+            }), 400
+        
+        transcription_ids = data.get('transcription_ids', [])
+        if not transcription_ids or not isinstance(transcription_ids, list):
+            return jsonify({
+                'success': False,
+                'error': 'transcription_ids must be a non-empty list'
+            }), 400
+        
+        # Convert string IDs to ObjectId
+        from bson import ObjectId
+        try:
+            object_ids = [ObjectId(tid) if isinstance(tid, str) else tid for tid in transcription_ids]
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': f'Invalid transcription ID format: {str(e)}'
+            }), 400
+        
+        # Query for selected transcriptions with status 'completed'
+        query_filter = {
+            '_id': {'$in': object_ids},
+            '$or': [
+                {'manual_status': 'completed'},
+                {'status': 'completed'}
+            ]
+        }
+        
+        # Get selected completed transcriptions
+        cursor = storage_manager.collection.find(query_filter)
+        
+        # Create in-memory zip file
+        zip_buffer = BytesIO()
+        
+        def format_timestamp(ts):
+            """
+            Format timestamp to strict HH:MM:SS.Ms format with zero-padding.
+            Input formats: 
+                - "0:01.804" (M:SS.Ms) -> "00:00:01.804000"
+                - "1:00.021" (M:SS.Ms) -> "00:01:00.021000"
+                - "0:00:01.037" (H:MM:SS.Ms) -> "00:00:01.037000"
+                - "0:00:01.037000" (H:MM:SS.Ms) -> "00:00:01.037000"
+            Output format: "00:00:00.519350" (HH:MM:SS with 6-digit microseconds)
+            All components are zero-padded to ensure strict format.
+            """
+            if not ts:
+                return ts
+            
+            # Split time and microseconds
+            if '.' in ts:
+                time_part, micro_part = ts.split('.', 1)
+            else:
+                time_part = ts
+                micro_part = '0'
+            
+            # Parse time components
+            time_components = time_part.split(':')
+            
+            if len(time_components) == 2:
+                # Format: M:SS (e.g., "0:01.804" or "1:00.021")
+                minutes = time_components[0]
+                seconds = time_components[1]
+                hours = '0'
+            elif len(time_components) == 3:
+                # Format: H:MM:SS or HH:MM:SS (e.g., "0:00:01.037")
+                hours = time_components[0]
+                minutes = time_components[1]
+                seconds = time_components[2]
+            else:
+                # If format is unexpected, return as-is
+                return ts
+            
+            # Zero-pad hours to 2 digits (HH)
+            hours = hours.zfill(2)
+            # Ensure minutes are 2 digits (MM)
+            minutes = minutes.zfill(2)
+            # Ensure seconds are 2 digits (SS)
+            seconds = seconds.zfill(2)
+            
+            # Format microseconds to exactly 6 digits (Ms)
+            if len(micro_part) < 6:
+                micro_part = micro_part.ljust(6, '0')
+            elif len(micro_part) > 6:
+                micro_part = micro_part[:6]
+            
+            return f"{hours}:{minutes}:{seconds}.{micro_part}"
+        
+        def transform_transcription_data(doc, transcription_data):
+            """
+            Transform transcription_data from current format to required format.
+            
+            Current format:
+            {
+                "words": [{"start": "...", "end": "...", "word": "...", ...}],
+                "language": "...",
+                "audio_path": "...",
+                ...
+            }
+            
+            Required format:
+            {
+                "id": 1763711314101,
+                "file_name": "7235852_audio.mp3",
+                "annotations": [
+                    {
+                        "start": "0:00:01.119000",
+                        "end": "0:00:01.609000",
+                        "Transcription": ["એક"]
+                    },
+                    ...
+                ]
+            }
+            """
+            # Get MongoDB document ID and convert to timestamp (milliseconds since epoch)
+            from bson import ObjectId
+            doc_id = doc.get('_id')
+            if isinstance(doc_id, ObjectId):
+                # ObjectId contains timestamp in first 4 bytes (seconds since epoch)
+                id_timestamp = int(doc_id.generation_time.timestamp() * 1000)  # Convert to milliseconds
+            else:
+                # Fallback: use current timestamp
+                id_timestamp = int(time.time() * 1000)
+            
+            # Get filename from various sources
+            metadata = transcription_data.get('metadata', {})
+            audio_path = transcription_data.get('audio_path') or metadata.get('audio_path', '')
+            s3_metadata = doc.get('s3_metadata', {})
+            
+            # Determine filename - prioritize original filename without timestamp
+            if s3_metadata.get('key'):
+                # S3 key format: audio/{timestamp}_{original_filename}
+                # Extract original filename by removing timestamp prefix
+                s3_key = s3_metadata.get('key', '')
+                s3_filename = s3_key.split('/')[-1] if '/' in s3_key else s3_key
+                
+                # Remove timestamp prefix (format: YYYYMMDD_HHMMSS_)
+                # Timestamp is 15 characters (8 digits + underscore + 6 digits) + underscore = 16 chars
+                if len(s3_filename) > 16 and s3_filename[15] == '_':
+                    # Check if first 8 chars are digits (date) and next 7 chars are underscore + time
+                    if s3_filename[:8].isdigit() and s3_filename[9:15].isdigit():
+                        file_name = s3_filename[16:]  # Remove timestamp prefix
+                    else:
+                        file_name = s3_filename
+                else:
+                    file_name = s3_filename
+            elif audio_path:
+                # Extract filename from audio_path (handle paths like "/api/audio/5143282_audio.mp3")
+                if '/' in audio_path:
+                    file_name = audio_path.split('/')[-1]
+                else:
+                    file_name = audio_path
+            else:
+                # Fallback to metadata filename or use document ID
+                file_name = metadata.get('filename', f"transcription_{doc_id}")
+            
+            # Transform words array to annotations array
+            words = transcription_data.get('words', [])
+            annotations = []
+            
+            for word_obj in words:
+                start = format_timestamp(word_obj.get('start', ''))
+                end = format_timestamp(word_obj.get('end', ''))
+                word_text = word_obj.get('word', '')
+                
+                # Create annotation in required format
+                annotation = {
+                    'start': start,
+                    'end': end,
+                    'Transcription': [word_text]  # Transcription is an array with the word
+                }
+                annotations.append(annotation)
+            
+            # Build the transformed data
+            transformed_data = {
+                'id': id_timestamp,
+                'file_name': file_name,
+                'annotations': annotations
+            }
+            
+            return transformed_data
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            count = 0
+            skipped_count = 0
+            for doc in cursor:
+                try:
+                    # Get transcription data
+                    transcription_data = doc.get('transcription_data', {})
+                    if not transcription_data:
+                        skipped_count += 1
+                        continue
+                    
+                    # Transform to required format
+                    transformed_data = transform_transcription_data(doc, transcription_data)
+                    
+                    # Get filename for the JSON file
+                    file_name = transformed_data.get('file_name', 'transcription')
+                    base_name = os.path.splitext(file_name)[0]
+                    json_filename = f"{base_name}.json"
+                    
+                    # Convert to JSON string
+                    json_content = json.dumps(transformed_data, ensure_ascii=False, indent=2)
+                    
+                    # Add to zip
+                    zip_file.writestr(json_filename, json_content.encode('utf-8'))
+                    count += 1
+                    
+                except Exception as e:
+                    print(f"⚠️  Error processing transcription {doc.get('_id')}: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    skipped_count += 1
+                    continue
+            
+            if skipped_count > 0:
+                print(f"⚠️  Skipped {skipped_count} transcription(s) (not completed or missing data)")
+        
+        if count == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No completed transcriptions found in the selected files'
+            }), 404
+        
+        # Prepare zip file for download
+        zip_buffer.seek(0)
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"selected_completed_transcriptions_{timestamp}.zip"
+        
+        print(f"✅ Created zip file with {count} transcription(s): {zip_filename}")
+        
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=zip_filename
+        )
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error downloading selected completed transcriptions: {str(e)}")
         print(error_trace)
         
         return jsonify({

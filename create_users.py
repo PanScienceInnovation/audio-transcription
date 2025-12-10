@@ -165,6 +165,27 @@ USERS = [
         'is_admin': False
     },
     {
+        'username': 'telugu_user1',
+        'password': 'telugu_user@123',
+        'email': 'telugu_user1@phonex.ai',
+        'name': 'Telugu User',
+        'is_admin': False
+    },
+    {
+        'username': 'telugu_user2',
+        'password': 'telugu_user@456',
+        'email': 'telugu_user2@phonex.ai',
+        'name': 'Telugu User 2',
+        'is_admin': False
+    },
+    {
+        'username': 'telugu_user3',
+        'password': 'telugu_user@789',
+        'email': 'telugu_user3@phonex.ai',
+        'name': 'Telugu User 3',
+        'is_admin': False
+    },
+    {
         'username': 'tester',
         'password': 'tester@123',
         'email': 'tester@phonex.ai',
@@ -249,12 +270,21 @@ def create_users():
         # Create each user
         for user_data in USERS:
             username = user_data['username']
+            email = user_data['email']
             
-            # Check if user already exists
-            existing_user = users_collection.find_one({'username': username})
+            # Check if user already exists by username or email
+            existing_user = users_collection.find_one({
+                '$or': [
+                    {'username': username},
+                    {'email': email}
+                ]
+            })
             
             if existing_user:
-                print(f"⚠️  User '{username}' already exists, skipping...")
+                if existing_user.get('username') == username:
+                    print(f"⚠️  User '{username}' already exists, skipping...")
+                else:
+                    print(f"⚠️  Email '{email}' already exists (username: {existing_user.get('username')}), skipping '{username}'...")
                 skipped_count += 1
                 continue
             
