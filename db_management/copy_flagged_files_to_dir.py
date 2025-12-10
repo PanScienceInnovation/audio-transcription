@@ -8,9 +8,47 @@ from pathlib import Path
 
 # Filenames provided by user
 filenames = [
-    "5494531_audio.mp3", "6848876_audio.mp3", "7234398_audio.mp3", "7239089_audio.mp3",
-"7235476_audio.mp3", "5254889_audio.mp3", "5189362_audio.mp3", "5172392_audio.mp3",
-"5156355_audio.mp3", "5143424_audio.mp3"
+    "5191919_audio.mp3",
+"7242936_audio.mp3",
+"7238581_audio.mp3",
+"5326330_audio.mp3",
+"5439399_audio.mp3",
+"5241317_audio.mp3",
+"5534960_audio.mp3",
+"5175503_audio.mp3",
+"6576242_audio.mp3",
+"7238783_audio.mp3",
+"5195921_audio.mp3",
+"5194458_audio.mp3",
+"5178165_audio.mp3",
+"5540130_audio.mp3",
+"5497812_audio.mp3",
+"5632958_audio.mp3",
+"7239384_audio.mp3",
+"5313169_audio.mp3",
+"5269009_audio.mp3",
+"5225319_audio.mp3",
+
+"5143775_audio.mp3",
+"5817954_audio.mp3",
+"5764023_audio.mp3",
+"7242832_audio.mp3",
+"5625363_audio.mp3",
+"5193740_audio.mp3",
+"6989786_audio.mp3",
+"6106493_audio.mp3",
+"5702005_audio.mp3",
+"5196097_audio.mp3",
+"5143758_audio.mp3",
+"5191507_audio.mp3",
+"5755425_audio.mp3",
+"5175383_audio.mp3",
+"5289317_audio.mp3",
+"7231410_audio.mp3",
+"5630791_audio.mp3",
+"5143282_audio.mp3",
+"7235847_audio.mp3",
+"7242129_audio.mp3"
 ]
 
 # Extract prefixes (remove _audio.mp3 or .mp3)
@@ -26,7 +64,7 @@ for filename in filenames:
 
 # Source and destination paths
 source_dir = Path("/Users/ayush/Desktop/Wadhwani_bucket_data/data/bucket-prod-orf-asso1-indikaai/gujrati/batch1/annotation_data")
-dest_dir = Path("/Users/ayush/Desktop/transcription/data/flagged_data/data_4/1")
+dest_dir = Path("/Users/ayush/Desktop/transcription/data/flagged_data/data_4/2")
 
 def copy_folders():
     """Copy folders from source to destination based on prefixes"""

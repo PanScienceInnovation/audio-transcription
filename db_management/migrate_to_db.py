@@ -12,13 +12,13 @@ from typing import Dict, Any, Optional, Tuple
 import time
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-script_dir = Path(__file__).parent
-env_path = script_dir / '.env'
+# Load environment variables from .env file in project root
+project_root = Path(__file__).parent.parent
+env_path = project_root / '.env'
 load_dotenv(dotenv_path=env_path)
 
-# Add parent directory to path to import utils
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add project root to path to import utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.storage import StorageManager
 from utils.audio_utils import get_audio_duration
@@ -296,18 +296,22 @@ def check_duplicate(folder_id: str, storage_manager: StorageManager) -> bool:
 
 
 def main():
-    """Main function to process all folders in data/flagged_data/data_2/."""
-    # Configuration
-    data_dir = os.path.join(os.path.dirname(__file__), 'data', 'flagged_data', 'data_3')
+    """Main function to process all folders in data/flagged_data/data_4/1."""
+    # Configuration - use project root as base
+    project_root = Path(__file__).parent.parent
+    data_dir = project_root / 'data' / 'flagged_data' / 'data_4' / '2'
     user_id = os.getenv('UPLOAD_USER_ID', 'anonymous')  # Optional: set user ID
     
+    # Convert to string for os.path operations
+    data_dir_str = str(data_dir)
+    
     # Check if directory exists
-    if not os.path.exists(data_dir):
-        print(f"❌ Error: Directory not found: {data_dir}")
+    if not os.path.exists(data_dir_str):
+        print(f"❌ Error: Directory not found: {data_dir_str}")
         sys.exit(1)
     
     print("🚀 Starting Flagged Data Processing")
-    print(f"   Source directory: {data_dir}")
+    print(f"   Source directory: {data_dir_str}")
     print(f"   User ID: {user_id}")
     print()
     
@@ -328,8 +332,8 @@ def main():
     
     # Get all folders (subdirectories with numeric names)
     folders = []
-    for item in os.listdir(data_dir):
-        item_path = os.path.join(data_dir, item)
+    for item in os.listdir(data_dir_str):
+        item_path = os.path.join(data_dir_str, item)
         if os.path.isdir(item_path) and not item.startswith('.'):
             # Check if it's a numeric folder name (or any folder)
             folders.append(item_path)

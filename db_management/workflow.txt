@@ -1,0 +1,5 @@
+put filenames in copy_flagged_files_to_dir.py
+copy the files to dir
+process them using process_all_audio.py
+delete flagged files using delete_flagged_files.py
+upload the files to database using migrate_to_db.py
