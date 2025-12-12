@@ -73,16 +73,17 @@ interface Transcription {
 function AdminPanel() {
   const navigate = useNavigate();
   const [users, setUsers] = useState<User[]>([]);
-  const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [allTranscriptions, setAllTranscriptions] = useState<Transcription[]>([]); // Store ALL transcriptions
+  const [loading, setLoading] = useState(false);
   const [assigning, setAssigning] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedUserId, setSelectedUserId] = useState<string>('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(20); // 20 items per page
+  const [itemsPerPage, setItemsPerPage] = useState(20); // Items per page (default: 20)
   const [totalItems, setTotalItems] = useState(0); // Total items from backend
   const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, completed: 0, double_flagged: 0, reprocessed: 0, total_done_duration: 0, total_completed_duration: 0 }); // Statistics from backend
+  const [usersLoaded, setUsersLoaded] = useState(false); // Track if users have been loaded
   const [selectedTranscriptions, setSelectedTranscriptions] = useState<Set<string>>(new Set());
   const [bulkAssignUserId, setBulkAssignUserId] = useState<string>('');
   const [bulkAssigning, setBulkAssigning] = useState(false);
@@ -117,7 +118,8 @@ function AdminPanel() {
       setMessage({ type: 'error', text: 'Access denied. Admin privileges required.' });
       return;
     }
-    loadData();
+    // Initial load - will be handled by separate useEffects
+    setLoading(false);
   }, [isAdmin]);
 
   // Reset to page 1 when search term or filters change
@@ -125,35 +127,76 @@ function AdminPanel() {
     setCurrentPage(1);
   }, [searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, originalAssigneeFilter, flaggedFilter]);
 
-  // Reload data when page changes or filters change
+  // Reset to page 1 when itemsPerPage changes
   useEffect(() => {
-    if (isAdmin) {
-      loadData();
+    setCurrentPage(1);
+  }, [itemsPerPage]);
+
+  // Load users only once on mount
+  useEffect(() => {
+    if (isAdmin && !usersLoaded) {
+      loadUsers();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPage, searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, originalAssigneeFilter, flaggedFilter, isAdmin]);
+  }, [isAdmin, usersLoaded]);
 
-  const loadData = async () => {
-    setLoading(true);
+  // Load statistics on mount and when filters change (but not on page changes)
+  useEffect(() => {
+    if (isAdmin) {
+      loadStatistics();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, originalAssigneeFilter, flaggedFilter]);
+
+  // Reload transcriptions ONLY when filters/search change (NOT on page changes)
+  useEffect(() => {
+    if (isAdmin) {
+      loadTranscriptions();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, languageFilter, dateFilter, statusFilter, assignedUserFilter, originalAssigneeFilter, flaggedFilter, isAdmin]);
+
+  // Load users separately (cache - only load once)
+  const loadUsers = async () => {
     try {
       const config = getAxiosConfig();
-
-      // Load users
       const usersResponse = await axios.get(`${API_BASE_URL}/api/admin/users`, config);
       if (usersResponse.data.success) {
         setUsers(usersResponse.data.users.filter((u: User) => !u.is_admin)); // Exclude admins from assignment list
+        setUsersLoaded(true);
       }
+    } catch (error: any) {
+      console.error('Failed to load users:', error);
+      // Don't show error message for users - it's not critical
+    }
+  };
 
-      // Load statistics (overall counts, not filtered)
+  // Load statistics separately (reload when filters change)
+  const loadStatistics = async () => {
+    try {
+      const config = getAxiosConfig();
       const statsResponse = await axios.get(`${API_BASE_URL}/api/transcriptions/statistics`, config);
       if (statsResponse.data.success) {
         setStatistics(statsResponse.data.data);
       }
+    } catch (error: any) {
+      console.error('Failed to load statistics:', error);
+      // Don't show error message for stats - it's not critical for pagination
+    }
+  };
 
-      // Build query parameters for transcriptions
+  // Load all transcriptions (called once, then client-side pagination)
+  const loadTranscriptions = async () => {
+    setLoading(true);
+    try {
+      const config = getAxiosConfig();
+
+      // Build query parameters for transcriptions (NO pagination params - fetch all matching records)
       const params = new URLSearchParams();
-      params.append('limit', itemsPerPage.toString());
-      params.append('skip', ((currentPage - 1) * itemsPerPage).toString());
+      // Use a large limit to fetch all records, or remove limit/skip entirely
+      // Setting a high limit (10000) to get all records
+      params.append('limit', '10000');
+      params.append('skip', '0');
       
       if (searchTerm) params.append('search', searchTerm);
       if (languageFilter) params.append('language', languageFilter);
@@ -163,16 +206,37 @@ function AdminPanel() {
       if (originalAssigneeFilter) params.append('original_assignee', originalAssigneeFilter);
       if (flaggedFilter) params.append('flagged', flaggedFilter);
 
-      // Load transcriptions with pagination and filters
+      // Load ALL transcriptions matching filters (no pagination from backend)
       const transcriptionsResponse = await axios.get(`${API_BASE_URL}/api/transcriptions?${params.toString()}`, config);
       if (transcriptionsResponse.data.success) {
-        setTranscriptions(transcriptionsResponse.data.data.transcriptions);
-        // Store total count for pagination
-        setTotalItems(transcriptionsResponse.data.data.total || 0);
+        // Store ALL transcriptions - pagination will be handled client-side
+        const allTrans = transcriptionsResponse.data.data.transcriptions;
+        setAllTranscriptions(allTrans);
+        // Store total count
+        setTotalItems(transcriptionsResponse.data.data.total || allTrans.length);
+        // Reset to page 1 when new data is loaded
+        setCurrentPage(1);
       }
     } catch (error: any) {
-      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to load data' });
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to load transcriptions' });
     } finally {
+      setLoading(false);
+    }
+  };
+
+  // Initial data load (for backward compatibility - reloads everything)
+  // Used by action handlers (assign, delete, etc.) that need to refresh everything
+  const loadData = async () => {
+    try {
+      // Reload users and statistics (in case they changed)
+      await Promise.all([
+        loadUsers(),
+        loadStatistics()
+      ]);
+      // Then reload transcriptions (this sets loading state)
+      await loadTranscriptions();
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to load data' });
       setLoading(false);
     }
   };
@@ -752,17 +816,16 @@ function AdminPanel() {
   const totalCompletedDuration = statistics.total_completed_duration || 0;
 
   // Get unique languages for filter dropdown (from all transcriptions, not just current page)
-  // Note: This might need to be loaded separately or cached
-  const uniqueLanguages = Array.from(new Set(transcriptions.map(t => t.language).filter(Boolean))).sort();
+  const uniqueLanguages = Array.from(new Set(allTranscriptions.map(t => t.language).filter(Boolean))).sort();
 
-  // Transcriptions are already filtered, sorted, and paginated by the backend
-  // When filtering by 'done', the backend ensures actual 'done' files appear before 'assigned_for_review' files
-  const paginatedTranscriptions = transcriptions;
-  
-  // Calculate pagination info
-  const totalPages = Math.ceil(totalItems / itemsPerPage);
+  // Client-side pagination - slice the array based on current page
+  // Calculate pagination info based on all loaded transcriptions
+  const totalPages = Math.ceil(allTranscriptions.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = Math.min(startIndex + paginatedTranscriptions.length, totalItems);
+  const endIndex = startIndex + itemsPerPage;
+  
+  // Slice all transcriptions to only show current page items
+  const paginatedTranscriptions = allTranscriptions.slice(startIndex, endIndex);
 
   // Handle select/deselect all
   const handleSelectAll = (checked: boolean) => {
@@ -1634,61 +1697,101 @@ function AdminPanel() {
           )}
 
           {/* Pagination Controls */}
-          {totalItems > itemsPerPage && (
-            <div className="mt-6 flex items-center justify-between border-t border-gray-200 pt-4">
-              <div className="flex items-center text-sm text-gray-700">
-                Showing {startIndex + 1} to {Math.min(endIndex, totalItems)} of {totalItems} transcriptions
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                  disabled={currentPage === 1 || loading}
-                  className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          {allTranscriptions.length > 0 && (
+            <div className="mt-6 flex items-center justify-between border-t border-gray-200 pt-4 flex-wrap gap-4">
+              <div className="flex items-center gap-3 text-sm text-gray-700">
+                <span className="font-medium">Show:</span>
+                <select
+                  value={itemsPerPage}
+                  onChange={(e) => setItemsPerPage(Number(e.target.value))}
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                  disabled={loading}
                 >
-                  <ChevronLeft className="h-4 w-4" />
-                  Previous
-                </button>
+                  <option value={10}>10 / page</option>
+                  <option value={20}>20 / page</option>
+                  <option value={40}>40 / page</option>
+                  <option value={50}>50 / page</option>
+                  <option value={100}>100 / page</option>
+                </select>
+                <span className="text-gray-500">
+                  Showing {paginatedTranscriptions.length > 0 ? startIndex + 1 : 0} to {Math.min(startIndex + paginatedTranscriptions.length, allTranscriptions.length)} of {allTranscriptions.length} transcriptions
+                </span>
+              </div>
+              
+              {totalPages > 1 && (
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={currentPage === 1 || loading}
+                    className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Previous
+                  </button>
 
-                <div className="flex items-center gap-1">
-                  {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
-                    let page: number;
-                    if (totalPages <= 7) {
-                      page = i + 1;
-                    } else {
-                      const totalPages = Math.ceil(totalItems / itemsPerPage);
-                      if (currentPage <= 3) {
-                        page = i + 1;
-                      } else if (currentPage >= totalPages - 2) {
-                        page = totalPages - 6 + i;
-                      } else {
-                        page = currentPage - 3 + i;
-                      }
-                    }
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-700">
+                      Page {currentPage} / {totalPages}
+                    </span>
+                    {totalPages <= 10 ? (
+                      <div className="flex items-center gap-1">
+                        {Array.from({ length: totalPages }, (_, i) => {
+                          const page = i + 1;
+                          return (
+                            <button
+                              key={page}
+                              onClick={() => setCurrentPage(page)}
+                              disabled={loading}
+                              className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${currentPage === page
+                                  ? 'bg-blue-600 text-white'
+                                  : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50'
+                                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                            >
+                              {page}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        {Array.from({ length: 7 }, (_, i) => {
+                          let page: number;
+                          if (currentPage <= 3) {
+                            page = i + 1;
+                          } else if (currentPage >= totalPages - 2) {
+                            page = totalPages - 6 + i;
+                          } else {
+                            page = currentPage - 3 + i;
+                          }
 
-                    return (
-                      <button
-                        key={page}
-                        onClick={() => setCurrentPage(page)}
-                        className={`px-3 py-2 text-sm font-medium rounded-lg ${currentPage === page
-                            ? 'bg-blue-600 text-white'
-                            : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50'
-                          }`}
-                      >
-                        {page}
-                      </button>
-                    );
-                  })}
+                          return (
+                            <button
+                              key={page}
+                              onClick={() => setCurrentPage(page)}
+                              disabled={loading}
+                              className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${currentPage === page
+                                  ? 'bg-blue-600 text-white'
+                                  : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50'
+                                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                            >
+                              {page}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    disabled={currentPage >= totalPages || loading}
+                    className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
                 </div>
-
-                <button
-                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                  disabled={currentPage >= totalPages || loading}
-                  className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Next
-                  <ChevronRight className="h-4 w-4" />
-                </button>
-              </div>
+              )}
             </div>
           )}
         </div>
