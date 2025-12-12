@@ -201,7 +201,7 @@ USERS = [
     },
     {
         'username': 'admin',
-        'password': 'admin123',
+        'password': 'Admin@PSI123',
         'email': 'admin@phonex.ai',
         'name': 'Administrator',
         'is_admin': True

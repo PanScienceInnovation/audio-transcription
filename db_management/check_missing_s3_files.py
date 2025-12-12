@@ -207,7 +207,7 @@ def print_results(results):
     if results['orphaned_count'] > 0:
         print(f"\n⚠️  ORPHANED FILES IN S3 (not in MongoDB) ({results['orphaned_count']} files):")
         print("-" * 80)
-        for i, file_info in enumerate(results['orphaned_files_details'], 1):
+        for i, file_info in enumerate(results['orphaned_in_s3'], 1):
             print(f"\n{i}. S3 Key: {file_info['key']}")
             print(f"   Size: {file_info['size']:,} bytes ({file_info['size'] / 1024 / 1024:.2f} MB)")
             print(f"   Last Modified: {file_info['last_modified']}")
@@ -240,7 +240,7 @@ def print_results(results):
         if results['orphaned_count'] > 0:
             f.write(f"\n\nORPHANED FILES IN S3 ({results['orphaned_count']} files):\n")
             f.write("-" * 80 + "\n")
-            for file_info in results['orphaned_files_details']:
+            for file_info in results['orphaned_in_s3']:
                 f.write(f"\nS3 Key: {file_info['key']}\n")
                 f.write(f"Size: {file_info['size']:,} bytes ({file_info['size'] / 1024 / 1024:.2f} MB)\n")
                 f.write(f"Last Modified: {file_info['last_modified']}\n")
