@@ -2035,6 +2035,18 @@ def assign_transcription(transcription_id):
             assigned_user_id = str(user['_id'])
             print(f"✅ Found user: {assigned_user_id}")
         
+        # Validate transcription ID format (storage_manager will find it in any collection)
+        from bson import ObjectId as BSONObjectId
+        from bson.errors import InvalidId as BSONInvalidId
+        try:
+            obj_id = BSONObjectId(transcription_id)
+        except (BSONInvalidId, ValueError) as e:
+            print(f"❌ Invalid transcription ID format: {transcription_id} - {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Invalid transcription ID format: {str(e)}'
+            }), 400
+        
         result = storage_manager.assign_transcription(transcription_id, assigned_user_id)
         
         if result['success']:
@@ -2123,11 +2135,25 @@ def reassign_file(transcription_id):
                 'error': 'Invalid file ID format'
             }), 400
         
-        current_doc = storage_manager.collection.find_one({'_id': obj_id})
+        # Find the document in any collection (transcriptions or telugu_transcriptions)
+        current_doc = None
+        target_collection = None
+        collections_to_check = ['transcriptions', 'telugu_transcriptions']
+        
+        for coll_name in collections_to_check:
+            coll = storage_manager.db[coll_name]
+            doc = coll.find_one({'_id': obj_id})
+            if doc:
+                current_doc = doc
+                target_collection = coll
+                if coll_name != storage_manager.mongodb_collection:
+                    print(f"📝 Found transcription in collection '{coll_name}' for reassignment")
+                break
+        
         if not current_doc:
             return jsonify({
                 'success': False,
-                'error': 'File not found'
+                'error': f'File not found with ID: {transcription_id} in any collection'
             }), 404
         
         # Validation: Check if status is "completed"
@@ -2186,8 +2212,8 @@ def reassign_file(transcription_id):
         review_history = current_doc.get('review_history', [])
         previous_assigned_user_id = str(current_assigned_user_id) if current_assigned_user_id else None
         
-        # Update assigned_user_id, review_round = 1, status stays "done"
-        update_result = storage_manager.collection.update_one(
+        # Update assigned_user_id, review_round = 1, status stays "done" (using the correct collection)
+        update_result = target_collection.update_one(
             {'_id': obj_id},
             {
                 '$set': {
@@ -2216,16 +2242,16 @@ def reassign_file(transcription_id):
             'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
-        # Update review_history (MongoDB will create array if it doesn't exist)
-        storage_manager.collection.update_one(
+        # Update review_history (MongoDB will create array if it doesn't exist) (using the correct collection)
+        target_collection.update_one(
             {'_id': obj_id},
             {
                 '$push': {'review_history': review_history_entry}
             }
         )
         
-        # Get updated document
-        updated_doc = storage_manager.collection.find_one({'_id': obj_id})
+        # Get updated document (using the correct collection)
+        updated_doc = target_collection.find_one({'_id': obj_id})
         updated_doc['_id'] = str(updated_doc['_id'])
         if 'created_at' in updated_doc and isinstance(updated_doc['created_at'], datetime):
             updated_doc['created_at'] = updated_doc['created_at'].isoformat()
@@ -2328,6 +2354,20 @@ def bulk_assign_transcriptions():
         
         for transcription_id in transcription_ids:
             try:
+                print(f"📝 Attempting to assign transcription: {transcription_id}")
+                # Validate transcription ID format (storage_manager will find it in any collection)
+                from bson import ObjectId
+                from bson.errors import InvalidId
+                try:
+                    obj_id = ObjectId(transcription_id)
+                except (InvalidId, ValueError) as e:
+                    print(f"❌ Invalid transcription ID format: {transcription_id} - {str(e)}")
+                    results['failed'].append({
+                        'id': transcription_id,
+                        'error': f'Invalid transcription ID format: {str(e)}'
+                    })
+                    continue
+                
                 result = storage_manager.assign_transcription(transcription_id, assigned_user_id)
                 if result['success']:
                     results['successful'].append({
@@ -2340,6 +2380,9 @@ def bulk_assign_transcriptions():
                         'error': result.get('error', 'Failed to assign')
                     })
             except Exception as e:
+                error_trace = traceback.format_exc()
+                print(f"❌ Exception assigning transcription {transcription_id}: {str(e)}")
+                print(error_trace)
                 results['failed'].append({
                     'id': transcription_id,
                     'error': str(e)
@@ -2390,6 +2433,18 @@ def unassign_transcription(transcription_id):
                 'success': False,
                 'error': 'Admin access required'
             }), 403
+        
+        # Validate transcription ID format (storage_manager will find it in any collection)
+        from bson import ObjectId as BSONObjectId
+        from bson.errors import InvalidId as BSONInvalidId
+        try:
+            obj_id = BSONObjectId(transcription_id)
+        except (BSONInvalidId, ValueError) as e:
+            print(f"❌ Invalid transcription ID format: {transcription_id} - {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Invalid transcription ID format: {str(e)}'
+            }), 400
         
         result = storage_manager.unassign_transcription(transcription_id)
         
@@ -2547,11 +2602,23 @@ def bulk_reassign_transcriptions():
                     })
                     continue
                 
-                current_doc = storage_manager.collection.find_one({'_id': obj_id})
+                # Find the document in any collection (transcriptions or telugu_transcriptions)
+                current_doc = None
+                target_collection = None
+                collections_to_check = ['transcriptions', 'telugu_transcriptions']
+                
+                for coll_name in collections_to_check:
+                    coll = storage_manager.db[coll_name]
+                    doc = coll.find_one({'_id': obj_id})
+                    if doc:
+                        current_doc = doc
+                        target_collection = coll
+                        break
+                
                 if not current_doc:
                     results['failed'].append({
                         'id': transcription_id,
-                        'error': 'File not found'
+                        'error': f'File not found with ID: {transcription_id} in any collection'
                     })
                     continue
                 
@@ -2583,8 +2650,8 @@ def bulk_reassign_transcriptions():
                 review_history = current_doc.get('review_history', [])
                 previous_assigned_user_id = str(current_assigned_user_id) if current_assigned_user_id else None
                 
-                # Update assigned_user_id, review_round = 1
-                update_result = storage_manager.collection.update_one(
+                # Update assigned_user_id, review_round = 1 (using the correct collection)
+                update_result = target_collection.update_one(
                     {'_id': obj_id},
                     {
                         '$set': {
@@ -2614,8 +2681,8 @@ def bulk_reassign_transcriptions():
                     'timestamp': datetime.now(timezone.utc).isoformat()
                 }
                 
-                # Update review_history
-                storage_manager.collection.update_one(
+                # Update review_history (using the correct collection)
+                target_collection.update_one(
                     {'_id': obj_id},
                     {
                         '$push': {'review_history': review_history_entry}

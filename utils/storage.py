@@ -562,8 +562,29 @@ class StorageManager:
             # Ensure assigned_user_id is stored as string for consistent filtering
             assigned_user_id_str = str(assigned_user_id)
             
-            # Get current document to check review_round
-            current_doc = self.collection.find_one({'_id': obj_id})
+            # Find the document in any collection (transcriptions or telugu_transcriptions)
+            current_doc = None
+            target_collection = None
+            collections_to_check = ['transcriptions', 'telugu_transcriptions']
+            
+            for coll_name in collections_to_check:
+                coll = self.db[coll_name]
+                doc = coll.find_one({'_id': obj_id})
+                if doc:
+                    current_doc = doc
+                    target_collection = coll
+                    if coll_name != self.mongodb_collection:
+                        print(f"📝 Found transcription in collection '{coll_name}' (current default: '{self.mongodb_collection}')")
+                    break
+            
+            # Check if document exists
+            if not current_doc:
+                print(f"❌ Transcription not found: {document_id} (ObjectId: {obj_id})")
+                print(f"   Checked collections: {collections_to_check}")
+                return {
+                    'success': False,
+                    'error': f'Transcription not found with ID: {document_id} in any collection'
+                }
             
             # Prepare update fields
             update_fields = {
@@ -572,15 +593,15 @@ class StorageManager:
             }
             
             # Initialize review_round to 0 if not set (first assignment)
-            if current_doc and 'review_round' not in current_doc:
+            if 'review_round' not in current_doc:
                 update_fields['review_round'] = 0
             
             # Initialize review_history to empty array if not set
-            if current_doc and 'review_history' not in current_doc:
+            if 'review_history' not in current_doc:
                 update_fields['review_history'] = []
             
-            # Update the assigned_user_id field
-            update_result = self.collection.update_one(
+            # Update the assigned_user_id field in the correct collection
+            update_result = target_collection.update_one(
                 {'_id': obj_id},
                 {
                     '$set': update_fields
@@ -588,16 +609,18 @@ class StorageManager:
             )
             
             if update_result.matched_count == 0:
+                print(f"❌ Update failed: Transcription {document_id} not found during update")
                 return {
                     'success': False,
-                    'error': 'Transcription not found'
+                    'error': f'Transcription not found with ID: {document_id}'
                 }
             
-            # Verify the assignment was saved correctly
-            updated_doc = self.collection.find_one({'_id': obj_id})
+            # Verify the assignment was saved correctly (using the correct collection)
+            updated_doc = target_collection.find_one({'_id': obj_id})
             saved_assigned_id = updated_doc.get('assigned_user_id') if updated_doc else None
             
-            print(f"✅ Assigned transcription {document_id} to user {assigned_user_id_str}")
+            collection_name = target_collection.name
+            print(f"✅ Assigned transcription {document_id} to user {assigned_user_id_str} in collection '{collection_name}'")
             print(f"   Verification: saved assigned_user_id = {saved_assigned_id}")
             
             if str(saved_assigned_id) != assigned_user_id_str:
@@ -645,8 +668,31 @@ class StorageManager:
                     'error': f'Invalid transcription ID format: {str(e)}'
                 }
             
-            # Remove the assigned_user_id (set to None)
-            update_result = self.collection.update_one(
+            # Find the document in any collection (transcriptions or telugu_transcriptions)
+            current_doc = None
+            target_collection = None
+            collections_to_check = ['transcriptions', 'telugu_transcriptions']
+            
+            for coll_name in collections_to_check:
+                coll = self.db[coll_name]
+                doc = coll.find_one({'_id': obj_id})
+                if doc:
+                    current_doc = doc
+                    target_collection = coll
+                    if coll_name != self.mongodb_collection:
+                        print(f"📝 Found transcription in collection '{coll_name}' (current default: '{self.mongodb_collection}')")
+                    break
+            
+            if not current_doc:
+                print(f"❌ Transcription not found: {document_id} (ObjectId: {obj_id})")
+                print(f"   Checked collections: {collections_to_check}")
+                return {
+                    'success': False,
+                    'error': f'Transcription not found with ID: {document_id} in any collection'
+                }
+            
+            # Remove the assigned_user_id (set to None) in the correct collection
+            update_result = target_collection.update_one(
                 {'_id': obj_id},
                 {
                     '$set': {
@@ -657,12 +703,14 @@ class StorageManager:
             )
             
             if update_result.matched_count == 0:
+                print(f"❌ Update failed: Transcription {document_id} not found during update")
                 return {
                     'success': False,
-                    'error': 'Transcription not found'
+                    'error': f'Transcription not found with ID: {document_id}'
                 }
             
-            print(f"✅ Unassigned transcription {document_id}")
+            collection_name = target_collection.name
+            print(f"✅ Unassigned transcription {document_id} from collection '{collection_name}'")
             
             return {
                 'success': True,
