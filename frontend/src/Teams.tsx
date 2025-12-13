@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { Users, FileText, CheckSquare, Flag, Loader2, ArrowLeft, Search, X, Eye, XCircle } from 'lucide-react';
+import { Users, FileText, CheckSquare, Flag, Loader2, ArrowLeft, Search, X, Eye, XCircle, Award, CheckCircle2 } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:5002' : '/api');
 
@@ -39,6 +39,7 @@ interface User {
   email: string;
   name: string;
   is_admin: boolean;
+  is_final_tester?: boolean;
 }
 
 interface UserStats {
@@ -48,6 +49,8 @@ interface UserStats {
   completedFiles: number;
   flaggedFiles: number;
   pendingFiles: number;
+  validatingFiles?: number;
+  passedFiles?: number;
 }
 
 interface TeamStatsResponse {
@@ -58,6 +61,8 @@ interface TeamStatsResponse {
     totalAnnotatedFiles: number;
     totalCompletedFiles: number;
     totalFlaggedFiles: number;
+    totalValidatingFiles?: number;
+    totalPassedFiles?: number;
   };
 }
 
@@ -194,6 +199,27 @@ function Teams() {
   const handleLoadTranscription = (filename: string) => {
     const encodedFilename = encodeURIComponent(filename);
     navigate(`/word-level/transcription/${encodedFilename}?from=teams`);
+  };
+
+  const handleToggleFinalTester = async (userId: string, currentStatus: boolean) => {
+    try {
+      const config = getAxiosConfig();
+      const response = await axios.put(
+        `${API_BASE_URL}/api/admin/users/${userId}/final-tester`,
+        { is_final_tester: !currentStatus },
+        config
+      );
+
+      if (response.data.success) {
+        setMessage({ type: 'success', text: `Final tester status ${!currentStatus ? 'enabled' : 'disabled'} successfully` });
+        // Reload data to reflect changes
+        loadData();
+      } else {
+        setMessage({ type: 'error', text: response.data.error || 'Failed to update final tester status' });
+      }
+    } catch (error: any) {
+      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to update final tester status' });
+    }
   };
 
   const hasActiveFilters = searchTerm || statusFilter || languageFilter || dateFilter || transcriptionTypeFilter;
@@ -422,24 +448,47 @@ function Teams() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {userStats.map((stat) => (
-                <div
+                  <div
                   key={stat.user._id}
-                  className="bg-white rounded-lg shadow-lg border border-gray-200 p-6 hover:shadow-xl transition-shadow"
+                  className="bg-white rounded-lg shadow-lg border border-gray-200 p-6 hover:shadow-xl transition-shadow flex flex-col h-full"
                 >
-                  <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center justify-between mb-4 flex-shrink-0">
                     <div className="flex items-center gap-3">
                       <div className="bg-blue-100 rounded-full p-3">
                         <Users className="h-6 w-6 text-blue-600" />
                       </div>
                       <div>
-                        <h3 className="text-lg font-semibold text-gray-800">
-                          {stat.user.name || stat.user.username}
-                        </h3>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-lg font-semibold text-gray-800">
+                            {stat.user.name || stat.user.username}
+                          </h3>
+                          {stat.user.is_final_tester && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 border border-purple-300" title="Final Tester">
+                              <Award className="h-3 w-3 mr-1" />
+                              Final Tester
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
+                    <button
+                      onClick={() => handleToggleFinalTester(stat.user._id, stat.user.is_final_tester || false)}
+                      className={`p-2 rounded-lg transition-colors ${
+                        stat.user.is_final_tester
+                          ? 'bg-purple-100 text-purple-700 hover:bg-purple-200'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      }`}
+                      title={stat.user.is_final_tester ? 'Remove Final Tester' : 'Set as Final Tester'}
+                    >
+                      {stat.user.is_final_tester ? (
+                        <CheckCircle2 className="h-5 w-5" />
+                      ) : (
+                        <Award className="h-5 w-5" />
+                      )}
+                    </button>
                   </div>
 
-                  <div className="space-y-3">
+                  <div className="space-y-3 flex-1 overflow-y-auto" style={{ maxHeight: '400px' }}>
                     {/* Assigned Files */}
                     <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
                       <div className="flex items-center gap-2">
@@ -495,6 +544,28 @@ function Teams() {
                       </div>
                       <span className="text-xl font-bold text-red-600">{stat.flaggedFiles}</span>
                     </div>
+
+                    {/* Validating Files - only show if user is final tester */}
+                    {stat.user.is_final_tester && (
+                      <div className="flex items-center justify-between p-3 bg-indigo-50 rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <Loader2 className="h-5 w-5 text-indigo-600" />
+                          <span className="text-sm font-medium text-gray-700">Validating Files</span>
+                        </div>
+                        <span className="text-xl font-bold text-indigo-600">{stat.validatingFiles || 0}</span>
+                      </div>
+                    )}
+
+                    {/* Passed Files - only show if user is final tester */}
+                    {stat.user.is_final_tester && (
+                      <div className="flex items-center justify-between p-3 bg-lime-50 rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <CheckSquare className="h-5 w-5 text-lime-600" />
+                          <span className="text-sm font-medium text-gray-700">Passed Files</span>
+                        </div>
+                        <span className="text-xl font-bold text-lime-600">{stat.passedFiles || 0}</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Progress Bar */}

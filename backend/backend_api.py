@@ -1480,11 +1480,25 @@ def save_file(transcription_id):
                 'error': 'Invalid file ID format'
             }), 400
         
-        current_doc = storage_manager.collection.find_one({'_id': obj_id})
+        # Find the document in any collection (transcriptions or telugu_transcriptions)
+        current_doc = None
+        target_collection = None
+        collections_to_check = ['transcriptions', 'telugu_transcriptions']
+        
+        for coll_name in collections_to_check:
+            coll = storage_manager.db[coll_name]
+            doc = coll.find_one({'_id': obj_id})
+            if doc:
+                current_doc = doc
+                target_collection = coll
+                if coll_name != storage_manager.mongodb_collection:
+                    print(f"📝 Found transcription in collection '{coll_name}' for save")
+                break
+        
         if not current_doc:
             return jsonify({
                 'success': False,
-                'error': 'File not found'
+                'error': f'File not found with ID: {transcription_id} in any collection'
             }), 404
         
         # Validation: Check if file is already completed
@@ -1494,7 +1508,7 @@ def save_file(transcription_id):
         # Compute current status (same logic as in list_transcriptions)
         if is_flagged:
             computed_status = 'flagged'
-        elif current_status in ['done', 'pending', 'flagged', 'completed']:
+        elif current_status in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
             computed_status = current_status
         elif current_doc.get('assigned_user_id') and current_doc.get('user_id'):
             if str(current_doc.get('assigned_user_id')) == str(current_doc.get('user_id')):
@@ -1522,8 +1536,12 @@ def save_file(transcription_id):
         if 'review_round' not in current_doc:
             review_round = 0
         
-        # Determine new status based on review_round
-        # If file is already completed, keep it as completed
+        # Determine new status based on current status and review_round
+        # Original workflow:
+        # 1. First assignment: status = "pending", review_round = 0
+        # 2. First save: status = "done", review_round stays 0
+        # 3. Reassignment: status stays "done", review_round = 1
+        # 4. Second save: status = "completed", review_round stays 1
         previous_status = computed_status
         new_status = None
         new_review_round = review_round
@@ -1544,19 +1562,26 @@ def save_file(transcription_id):
             if review_round != 1:
                 new_review_round = 1
             print(f"   → Editing completed file (user: {user_id}, admin: {is_admin}): status = 'completed', review_round = {new_review_round}")
-        elif review_round == 0:
-            # First reviewer: status = "done", review_round stays 0
+        elif computed_status == 'pending' or current_status == 'pending' or (not current_status and review_round == 0):
+            # First save: pending → done (first reviewer)
             new_status = 'done'
-            print(f"   → First review (review_round=0): status = 'done', review_round stays 0")
-        elif review_round == 1:
-            # Second reviewer: status = "completed", review_round stays 1
-            new_status = 'completed'
-            print(f"   → Second review (review_round=1): status = 'completed', review_round stays 1")
+            new_review_round = 0  # Ensure review_round is 0 for first save
+            print(f"   → First save (pending → done): status = 'done', review_round = 0")
+        elif computed_status == 'done' or current_status == 'done':
+            # Second save: done → completed (when review_round is 1, meaning it was reassigned)
+            if review_round == 1:
+                new_status = 'completed'
+                print(f"   → Second save (done → completed): status = 'completed', review_round = 1")
+            else:
+                # If review_round is still 0 but status is done, keep it as done (shouldn't happen normally)
+                new_status = 'done'
+                new_review_round = 0
+                print(f"   → Saving done file (review_round=0): status = 'done', review_round = 0")
         else:
-            # Fallback: if review_round is not 0 or 1, treat as first review
+            # Fallback: treat as first save
             new_review_round = 0
             new_status = 'done'
-            print(f"   → Fallback (invalid review_round={review_round}): status = 'done', review_round = 0")
+            print(f"   → Fallback: status = 'done', review_round = 0")
         
         # Update transcription data
         update_result = storage_manager.update_transcription(
@@ -1588,7 +1613,8 @@ def save_file(transcription_id):
         }
         
         # Update review_history in database (MongoDB will create array if it doesn't exist)
-        storage_manager.collection.update_one(
+        # Use the target_collection we found earlier
+        target_collection.update_one(
             {'_id': obj_id},
             {
                 '$push': {'review_history': review_history_entry},
@@ -1596,8 +1622,8 @@ def save_file(transcription_id):
             }
         )
         
-        # Get updated document
-        updated_doc = storage_manager.collection.find_one({'_id': obj_id})
+        # Get updated document from the correct collection
+        updated_doc = target_collection.find_one({'_id': obj_id})
         updated_doc['_id'] = str(updated_doc['_id'])
         if 'created_at' in updated_doc and isinstance(updated_doc['created_at'], datetime):
             updated_doc['created_at'] = updated_doc['created_at'].isoformat()
@@ -1671,11 +1697,23 @@ def update_transcription_by_id(transcription_id):
                 'error': 'Invalid file ID format'
             }), 400
         
-        current_doc = storage_manager.collection.find_one({'_id': obj_id})
+        # Find the document in any collection (transcriptions or telugu_transcriptions)
+        current_doc = None
+        collections_to_check = ['transcriptions', 'telugu_transcriptions']
+        
+        for coll_name in collections_to_check:
+            coll = storage_manager.db[coll_name]
+            doc = coll.find_one({'_id': obj_id})
+            if doc:
+                current_doc = doc
+                if coll_name != storage_manager.mongodb_collection:
+                    print(f"📝 Found transcription in collection '{coll_name}' for update")
+                break
+        
         if not current_doc:
             return jsonify({
                 'success': False,
-                'error': 'File not found'
+                'error': f'File not found with ID: {transcription_id} in any collection'
             }), 404
         
         # Check if file is completed
@@ -1685,7 +1723,7 @@ def update_transcription_by_id(transcription_id):
         # Compute current status (same logic as in save_file)
         if is_flagged:
             computed_status = 'flagged'
-        elif current_status in ['done', 'pending', 'flagged', 'completed']:
+        elif current_status in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
             computed_status = current_status
         elif current_doc.get('assigned_user_id') and current_doc.get('user_id'):
             if str(current_doc.get('assigned_user_id')) == str(current_doc.get('user_id')):
@@ -1869,7 +1907,7 @@ def update_transcription_status(transcription_id):
         - X-Is-Admin: 'true' (required)
     
     JSON Body:
-        - status: String ('done', 'pending', 'flagged', or 'completed')
+        - status: String ('done', 'pending', 'flagged', 'completed', 'validating', or 'passed')
     """
     try:
         # Check if user is admin
@@ -1888,10 +1926,10 @@ def update_transcription_status(transcription_id):
             }), 400
         
         status = data.get('status')
-        if status not in ['done', 'pending', 'flagged', 'completed']:
+        if status not in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
             return jsonify({
                 'success': False,
-                'error': 'status must be one of: done, pending, flagged, completed'
+                'error': 'status must be one of: done, pending, flagged, completed, validating, passed'
             }), 400
         
         result = storage_manager.update_transcription_status(transcription_id, status)
@@ -2081,6 +2119,135 @@ def assign_transcription(transcription_id):
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"❌ Error assigning transcription: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/transcriptions/<transcription_id>/pass', methods=['POST'])
+def mark_transcription_passed(transcription_id):
+    """
+    Mark a transcription as passed (final tester only).
+    This endpoint is for final testers to mark files in validating status as passed.
+    
+    Headers:
+        - X-User-ID: User ID (required)
+        - X-Is-Admin: 'true' or 'false'
+    
+    Returns:
+        JSON response with success status
+    """
+    try:
+        # Get user info from headers
+        user_id, is_admin = get_user_from_request()
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'User ID is required. Please provide X-User-ID header.'
+            }), 400
+        
+        # Verify user is a final tester
+        if users_collection:
+            from bson import ObjectId
+            from bson.errors import InvalidId
+            
+            try:
+                user_obj_id = ObjectId(user_id)
+                user = users_collection.find_one({'_id': user_obj_id})
+            except (InvalidId, ValueError):
+                user = None
+            
+            if not user:
+                return jsonify({
+                    'success': False,
+                    'error': 'User not found'
+                }), 404
+            
+            is_final_tester = user.get('is_final_tester', False)
+            if not is_final_tester and not is_admin:
+                return jsonify({
+                    'success': False,
+                    'error': 'Only final testers can mark transcriptions as passed'
+                }), 403
+        
+        # Find the document in any collection
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        
+        try:
+            obj_id = ObjectId(transcription_id)
+        except (InvalidId, ValueError):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid transcription ID format'
+            }), 400
+        
+        current_doc = None
+        target_collection = None
+        collections_to_check = ['transcriptions', 'telugu_transcriptions']
+        
+        for coll_name in collections_to_check:
+            coll = storage_manager.db[coll_name]
+            doc = coll.find_one({'_id': obj_id})
+            if doc:
+                current_doc = doc
+                target_collection = coll
+                break
+        
+        if not current_doc:
+            return jsonify({
+                'success': False,
+                'error': 'Transcription not found'
+            }), 404
+        
+        # Verify status is validating (or allow admin to pass any status)
+        current_status = current_doc.get('manual_status') or 'pending'
+        is_flagged = current_doc.get('is_flagged', False)
+        
+        if is_flagged:
+            computed_status = 'flagged'
+        elif current_status in ['done', 'pending', 'flagged', 'completed', 'validating']:
+            computed_status = current_status
+        else:
+            computed_status = 'pending'
+        
+        if not is_admin and computed_status != 'validating':
+            return jsonify({
+                'success': False,
+                'error': 'Only files in validating status can be marked as passed'
+            }), 400
+        
+        # Update status to passed and store passed_by
+        update_result = target_collection.update_one(
+            {'_id': obj_id},
+            {
+                '$set': {
+                    'manual_status': 'passed',
+                    'passed_by': str(user_id),
+                    'passed_at': datetime.now(timezone.utc),
+                    'updated_at': datetime.now(timezone.utc)
+                }
+            }
+        )
+        
+        if update_result.matched_count == 0:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to update transcription'
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'message': 'Transcription marked as passed'
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error marking transcription as passed: {str(e)}")
         print(error_trace)
         
         return jsonify({
@@ -2345,6 +2512,39 @@ def bulk_assign_transcriptions():
                     'success': False,
                     'error': f'User not found: {assigned_user_id}'
                 }), 404
+            
+            assigned_user_id = str(user['_id'])
+            is_final_tester = user.get('is_final_tester', False)
+        
+        # Check if any transcriptions are completed - if so, user must be final tester
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        has_completed_files = False
+        collections_to_check = ['transcriptions', 'telugu_transcriptions']
+        
+        for transcription_id in transcription_ids:
+            try:
+                obj_id = ObjectId(transcription_id)
+                for coll_name in collections_to_check:
+                    coll = storage_manager.db[coll_name]
+                    doc = coll.find_one({'_id': obj_id})
+                    if doc:
+                        current_status = doc.get('manual_status') or 'pending'
+                        if current_status == 'completed':
+                            has_completed_files = True
+                            break
+            except (InvalidId, ValueError):
+                pass
+            
+            if has_completed_files:
+                break
+        
+        # If assigning completed files, user must be a final tester
+        if has_completed_files and not is_final_tester:
+            return jsonify({
+                'success': False,
+                'error': 'Completed files can only be assigned to final testers. Please select a final tester.'
+            }), 400
         
         # Assign each transcription
         results = {
@@ -2368,11 +2568,42 @@ def bulk_assign_transcriptions():
                     })
                     continue
                 
+                # Check if this is a completed file - if so, set status to validating
+                is_completed = False
+                target_collection_for_status = None
+                try:
+                    obj_id = ObjectId(transcription_id)
+                    for coll_name in collections_to_check:
+                        coll = storage_manager.db[coll_name]
+                        doc = coll.find_one({'_id': obj_id})
+                        if doc:
+                            current_status = doc.get('manual_status') or 'pending'
+                            if current_status == 'completed':
+                                is_completed = True
+                                target_collection_for_status = coll
+                            break
+                except (InvalidId, ValueError):
+                    pass
+                
                 result = storage_manager.assign_transcription(transcription_id, assigned_user_id)
                 if result['success']:
+                    # If this was a completed file, update status to validating after assignment
+                    if is_completed and target_collection_for_status:
+                        try:
+                            obj_id = ObjectId(transcription_id)
+                            target_collection_for_status.update_one(
+                                {'_id': obj_id},
+                                {'$set': {'manual_status': 'validating', 'updated_at': datetime.now(timezone.utc)}}
+                            )
+                        except (InvalidId, ValueError):
+                            pass
+                    
+                    message = result.get('message', 'Assigned successfully')
+                    if is_completed:
+                        message = 'Assigned to final tester (status: validating)'
                     results['successful'].append({
                         'id': transcription_id,
-                        'message': result.get('message', 'Assigned successfully')
+                        'message': message
                     })
                 else:
                     results['failed'].append({
@@ -2581,6 +2812,7 @@ def bulk_reassign_transcriptions():
                 }), 404
             
             new_user_id = str(user['_id'])
+            is_final_tester = user.get('is_final_tester', False)
         
         # Reassign each transcription
         results = {
@@ -2629,7 +2861,7 @@ def bulk_reassign_transcriptions():
                 # Compute current status
                 if is_flagged:
                     computed_status = 'flagged'
-                elif current_status in ['done', 'pending', 'flagged', 'completed']:
+                elif current_status in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
                     computed_status = current_status
                 elif current_doc.get('assigned_user_id') and current_doc.get('user_id'):
                     if str(current_doc.get('assigned_user_id')) == str(current_doc.get('user_id')):
@@ -2639,18 +2871,28 @@ def bulk_reassign_transcriptions():
                 else:
                     computed_status = 'pending'
                 
-                if computed_status == 'completed' or current_status == 'completed':
-                    results['failed'].append({
-                        'id': transcription_id,
-                        'error': 'Cannot reassign completed file'
-                    })
-                    continue
+                # If status is completed, only allow reassignment to final testers
+                if (computed_status == 'completed' or current_status == 'completed'):
+                    if not is_final_tester:
+                        results['failed'].append({
+                            'id': transcription_id,
+                            'error': 'Completed files can only be reassigned to final testers'
+                        })
+                        continue
+                    # If reassigning completed file to final tester, change status to validating
+                    target_collection.update_one(
+                        {'_id': obj_id},
+                        {'$set': {'manual_status': 'validating', 'updated_at': datetime.now(timezone.utc)}}
+                    )
+                    # Update computed_status to reflect the change
+                    computed_status = 'validating'
                 
                 current_assigned_user_id = current_doc.get('assigned_user_id')
                 review_history = current_doc.get('review_history', [])
                 previous_assigned_user_id = str(current_assigned_user_id) if current_assigned_user_id else None
                 
                 # Update assigned_user_id, review_round = 1 (using the correct collection)
+                # If this is a completed file being reassigned to final tester, status is already set to validating above
                 update_result = target_collection.update_one(
                     {'_id': obj_id},
                     {
@@ -2670,12 +2912,13 @@ def bulk_reassign_transcriptions():
                     continue
                 
                 # Add review history entry
+                previous_computed_status = current_status if current_status == 'completed' else computed_status
                 review_history_entry = {
                     'round': 1,
                     'user_id': None,  # Admin action, no specific user
                     'action': 'reassign',
-                    'previous_status': computed_status,
-                    'new_status': computed_status,  # Status stays the same
+                    'previous_status': previous_computed_status,
+                    'new_status': computed_status,  # Status changed to validating for completed files
                     'previous_assigned_user_id': previous_assigned_user_id,
                     'new_assigned_user_id': str(new_user_id),
                     'timestamp': datetime.now(timezone.utc).isoformat()
@@ -2916,6 +3159,87 @@ def list_users():
         }), 500
 
 
+@app.route('/api/admin/users/<user_id>/final-tester', methods=['PUT'])
+def update_user_final_tester(user_id):
+    """
+    Update user's final tester status (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    JSON Body:
+        - is_final_tester: boolean (required)
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        if not users_collection:
+            return jsonify({
+                'success': False,
+                'error': 'User service unavailable'
+            }), 500
+        
+        data = request.get_json()
+        if not data or 'is_final_tester' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'is_final_tester field is required'
+            }), 400
+        
+        is_final_tester = bool(data['is_final_tester'])
+        
+        # Find user by ID or username
+        from bson import ObjectId
+        from bson.errors import InvalidId
+        
+        try:
+            user_obj_id = ObjectId(user_id)
+            user = users_collection.find_one({'_id': user_obj_id})
+        except (InvalidId, ValueError):
+            user = users_collection.find_one({'username': user_id})
+        
+        if not user:
+            return jsonify({
+                'success': False,
+                'error': 'User not found'
+            }), 404
+        
+        # Don't allow setting admin as final tester (or allow it, depending on requirements)
+        # For now, we'll allow it
+        
+        # Update user's final tester status
+        users_collection.update_one(
+            {'_id': user['_id']},
+            {
+                '$set': {
+                    'is_final_tester': is_final_tester,
+                    'updated_at': datetime.now(timezone.utc)
+                }
+            }
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': f'Final tester status updated to {is_final_tester}'
+        })
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error updating final tester status: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/team-stats', methods=['GET'])
 def get_team_stats():
     """
@@ -3087,10 +3411,12 @@ def get_team_stats():
                     {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
                     {'manual_status': {'$ne': 'flagged'}},
                     {'manual_status': {'$ne': 'completed'}},
+                    {'manual_status': {'$ne': 'validating'}},
+                    {'manual_status': {'$ne': 'passed'}},
                     {'$nor': [
                         {'manual_status': 'done'},
                         {'$and': [
-                            {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed']}},
+                            {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']}},
                             {'assigned_user_id': {'$ne': None}},
                             {'user_id': {'$ne': None}},
                             {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
@@ -3114,10 +3440,12 @@ def get_team_stats():
                         {'$and': [
                             {'$or': [{'$eq': ['$is_flagged', False]}, {'$not': '$is_flagged'}]},
                             {'$ne': ['$manual_status', 'completed']},
+                            {'$ne': ['$manual_status', 'validating']},
+                            {'$ne': ['$manual_status', 'passed']},
                             {'$or': [
                                 {'$eq': ['$manual_status', 'done']},
                                 {'$and': [
-                                    {'$not': {'$in': ['$manual_status', ['done', 'pending', 'flagged', 'completed']]}},
+                                    {'$not': {'$in': ['$manual_status', ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']]}},
                                     {'$ne': ['$assigned_user_id', None]},
                                     {'$ne': ['$user_id', None]},
                                     {'$eq': ['$assigned_user_id', '$user_id']}
@@ -3144,15 +3472,47 @@ def get_team_stats():
                         {'$and': [
                             {'$or': [{'$eq': ['$is_flagged', False]}, {'$not': '$is_flagged'}]},
                             {'$ne': ['$manual_status', 'completed']},
-                            {'$not': {'$or': [
-                                {'$eq': ['$manual_status', 'done']},
+                            {'$ne': ['$manual_status', 'validating']},
+                            {'$ne': ['$manual_status', 'passed']},
+                            {'$ne': ['$manual_status', 'flagged']},
+                            {'$or': [
+                                # Case 1: manual_status is explicitly set to 'pending'
+                                {'$eq': ['$manual_status', 'pending']},
+                                # Case 2: manual_status is not set and file is assigned, but assigned_user_id != user_id
                                 {'$and': [
-                                    {'$not': {'$in': ['$manual_status', ['done', 'pending', 'flagged', 'completed']]}},
+                                    {'$not': {'$in': ['$manual_status', ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']]}},
                                     {'$ne': ['$assigned_user_id', None]},
-                                    {'$ne': ['$user_id', None]},
-                                    {'$eq': ['$assigned_user_id', '$user_id']}
+                                    {'$or': [
+                                        {'$eq': ['$user_id', None]},
+                                        {'$ne': ['$assigned_user_id', '$user_id']}
+                                    ]}
+                                ]},
+                                # Case 3: manual_status is not set and file is not assigned
+                                {'$and': [
+                                    {'$or': [{'$eq': ['$assigned_user_id', None]}, {'$not': '$assigned_user_id'}]},
+                                    {'$not': {'$in': ['$manual_status', ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']]}}
                                 ]}
-                            ]}}
+                            ]}
+                        ]},
+                        1,
+                        0
+                    ]
+                }},
+                'validatingFiles': {'$sum': {
+                    '$cond': [
+                        {'$and': [
+                            {'$eq': ['$manual_status', 'validating']},
+                            {'$or': [{'$eq': ['$is_flagged', False]}, {'$not': '$is_flagged'}]}
+                        ]},
+                        1,
+                        0
+                    ]
+                }},
+                'passedFiles': {'$sum': {
+                    '$cond': [
+                        {'$and': [
+                            {'$eq': ['$manual_status', 'passed']},
+                            {'$or': [{'$eq': ['$is_flagged', False]}, {'$not': '$is_flagged'}]}
                         ]},
                         1,
                         0
@@ -3161,18 +3521,35 @@ def get_team_stats():
             }}
         ]
         
-        # Execute aggregation
+        # Execute aggregation on both collections
         stats_by_user = {}
-        for result in storage_manager.collection.aggregate(pipeline):
-            user_id = result['_id']
-            if user_id:
-                stats_by_user[user_id] = {
-                    'assignedFiles': result['assignedFiles'],
-                    'annotatedFiles': result['annotatedFiles'],
-                    'completedFiles': result['completedFiles'],
-                    'flaggedFiles': result['flaggedFiles'],
-                    'pendingFiles': result['pendingFiles']
-                }
+        collections_to_query = [storage_manager.collection]
+        if storage_manager.db.get_collection('telugu_transcriptions'):
+            collections_to_query.append(storage_manager.db.get_collection('telugu_transcriptions'))
+        
+        for collection in collections_to_query:
+            for result in collection.aggregate(pipeline):
+                user_id = result['_id']
+                if user_id:
+                    user_id_str = str(user_id) if user_id else None
+                    if user_id_str not in stats_by_user:
+                        stats_by_user[user_id_str] = {
+                            'assignedFiles': 0,
+                            'annotatedFiles': 0,
+                            'completedFiles': 0,
+                            'flaggedFiles': 0,
+                            'pendingFiles': 0,
+                            'validatingFiles': 0,
+                            'passedFiles': 0
+                        }
+                    # Sum up the counts from both collections
+                    stats_by_user[user_id_str]['assignedFiles'] += result['assignedFiles']
+                    stats_by_user[user_id_str]['annotatedFiles'] += result['annotatedFiles']
+                    stats_by_user[user_id_str]['completedFiles'] += result['completedFiles']
+                    stats_by_user[user_id_str]['flaggedFiles'] += result['flaggedFiles']
+                    stats_by_user[user_id_str]['pendingFiles'] += result['pendingFiles']
+                    stats_by_user[user_id_str]['validatingFiles'] += result.get('validatingFiles', 0)
+                    stats_by_user[user_id_str]['passedFiles'] += result.get('passedFiles', 0)
         
         agg_time = (time.time() - agg_start) * 1000
         print(f"⏱️  [TEAM-STATS] Aggregation completed in {agg_time:.2f}ms for {len(stats_by_user)} users")
@@ -3185,7 +3562,9 @@ def get_team_stats():
                 'annotatedFiles': 0,
                 'completedFiles': 0,
                 'flaggedFiles': 0,
-                'pendingFiles': 0
+                'pendingFiles': 0,
+                'validatingFiles': 0,
+                'passedFiles': 0
             })
             
             user_stats.append({
@@ -3199,6 +3578,8 @@ def get_team_stats():
         total_annotated_files = sum(stat['annotatedFiles'] for stat in user_stats)
         total_completed_files = sum(stat['completedFiles'] for stat in user_stats)
         total_flagged_files = sum(stat['flaggedFiles'] for stat in user_stats)
+        total_validating_files = sum(stat.get('validatingFiles', 0) for stat in user_stats)
+        total_passed_files = sum(stat.get('passedFiles', 0) for stat in user_stats)
         
         total_time = (time.time() - start_time) * 1000
         print(f"⏱️  [TEAM-STATS] Total time: {total_time:.2f}ms")
@@ -3212,7 +3593,9 @@ def get_team_stats():
                     'totalAssignedFiles': total_assigned_files,
                     'totalAnnotatedFiles': total_annotated_files,
                     'totalCompletedFiles': total_completed_files,
-                    'totalFlaggedFiles': total_flagged_files
+                    'totalFlaggedFiles': total_flagged_files,
+                    'totalValidatingFiles': total_validating_files,
+                    'totalPassedFiles': total_passed_files
                 }
             }
         })
@@ -3740,6 +4123,197 @@ def download_completed_transcriptions():
         }), 500
 
 
+@app.route('/api/admin/transcriptions/download-passed', methods=['GET'])
+def download_passed_transcriptions():
+    """
+    Download all transcriptions with status 'passed' as a zip file (admin only).
+    
+    Headers:
+        - X-Is-Admin: 'true' (required)
+    
+    Returns:
+        ZIP file containing all JSON transcription files for 'passed' transcriptions
+    """
+    try:
+        # Check if user is admin
+        _, is_admin = get_user_from_request()
+        if not is_admin:
+            return jsonify({
+                'success': False,
+                'error': 'Admin access required'
+            }), 403
+        
+        if not storage_manager.collection:
+            return jsonify({
+                'success': False,
+                'error': 'MongoDB not initialized'
+            }), 500
+        
+        # Query for transcriptions with status 'passed'
+        query_filter = {
+            '$or': [
+                {'manual_status': 'passed'},
+                {'status': 'passed'}
+            ]
+        }
+        
+        # Get all passed transcriptions from both collections
+        collections_to_check = ['transcriptions', 'telugu_transcriptions']
+        all_docs = []
+        
+        for coll_name in collections_to_check:
+            coll = storage_manager.db[coll_name]
+            cursor = coll.find(query_filter)
+            all_docs.extend(list(cursor))
+        
+        # Create in-memory zip file
+        zip_buffer = BytesIO()
+        
+        def format_timestamp(ts):
+            """Format timestamp to strict HH:MM:SS.Ms format with zero-padding."""
+            if not ts:
+                return ts
+            
+            # Split time and microseconds
+            if '.' in ts:
+                time_part, micro_part = ts.split('.', 1)
+            else:
+                time_part = ts
+                micro_part = '0'
+            
+            # Parse time components
+            time_components = time_part.split(':')
+            
+            if len(time_components) == 2:
+                minutes = time_components[0]
+                seconds = time_components[1]
+                hours = '0'
+            elif len(time_components) == 3:
+                hours = time_components[0]
+                minutes = time_components[1]
+                seconds = time_components[2]
+            else:
+                return ts
+            
+            hours = hours.zfill(2)
+            minutes = minutes.zfill(2)
+            seconds = seconds.zfill(2)
+            
+            if len(micro_part) < 6:
+                micro_part = micro_part.ljust(6, '0')
+            elif len(micro_part) > 6:
+                micro_part = micro_part[:6]
+            
+            return f"{hours}:{minutes}:{seconds}.{micro_part}"
+        
+        def transform_transcription_data(doc, transcription_data):
+            """Transform transcription_data to required format."""
+            from bson import ObjectId
+            doc_id = doc.get('_id')
+            if isinstance(doc_id, ObjectId):
+                id_timestamp = int(doc_id.generation_time.timestamp() * 1000)
+            else:
+                id_timestamp = int(time.time() * 1000)
+            
+            metadata = transcription_data.get('metadata', {})
+            audio_path = transcription_data.get('audio_path') or metadata.get('audio_path', '')
+            s3_metadata = doc.get('s3_metadata', {})
+            
+            if s3_metadata.get('key'):
+                s3_key = s3_metadata.get('key', '')
+                s3_filename = s3_key.split('/')[-1] if '/' in s3_key else s3_key
+                if len(s3_filename) > 16 and s3_filename[15] == '_':
+                    if s3_filename[:8].isdigit() and s3_filename[9:15].isdigit():
+                        file_name = s3_filename[16:]
+                    else:
+                        file_name = s3_filename
+                else:
+                    file_name = s3_filename
+            elif audio_path:
+                if '/' in audio_path:
+                    file_name = audio_path.split('/')[-1]
+                else:
+                    file_name = audio_path
+            else:
+                file_name = metadata.get('filename', f"transcription_{doc_id}")
+            
+            words = transcription_data.get('words', [])
+            annotations = []
+            
+            for word_obj in words:
+                start = format_timestamp(word_obj.get('start', ''))
+                end = format_timestamp(word_obj.get('end', ''))
+                word_text = word_obj.get('word', '')
+                
+                annotation = {
+                    'start': start,
+                    'end': end,
+                    'Transcription': [word_text]
+                }
+                annotations.append(annotation)
+            
+            transformed_data = {
+                'id': id_timestamp,
+                'file_name': file_name,
+                'annotations': annotations
+            }
+            
+            return transformed_data
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            count = 0
+            for doc in all_docs:
+                try:
+                    transcription_data = doc.get('transcription_data', {})
+                    if not transcription_data:
+                        continue
+                    
+                    transformed_data = transform_transcription_data(doc, transcription_data)
+                    
+                    file_name = transformed_data.get('file_name', 'transcription')
+                    base_name = os.path.splitext(file_name)[0]
+                    json_filename = f"{base_name}.json"
+                    
+                    json_content = json.dumps(transformed_data, ensure_ascii=False, indent=2)
+                    zip_file.writestr(json_filename, json_content.encode('utf-8'))
+                    count += 1
+                    
+                except Exception as e:
+                    print(f"⚠️  Error processing transcription {doc.get('_id')}: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    continue
+        
+        if count == 0:
+            return jsonify({
+                'success': False,
+                'error': 'No transcriptions with status "passed" found'
+            }), 404
+        
+        zip_buffer.seek(0)
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"passed_transcriptions_{timestamp}.zip"
+        
+        print(f"✅ Created zip file with {count} transcription(s): {zip_filename}")
+        
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=zip_filename
+        )
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"❌ Error downloading passed transcriptions: {str(e)}")
+        print(error_trace)
+        
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/admin/transcriptions/download-selected-completed', methods=['POST'])
 def download_selected_completed_transcriptions():
     """
@@ -4084,7 +4658,7 @@ if __name__ == '__main__':
     # Run server
     import os
     debug_mode = os.getenv('FLASK_ENV') != 'production'
-    port = int(os.getenv('FLASK_PORT', '5002'))  # Default to 5002 (available port in 5000-8000 range)
+    port = int(os.getenv('FLASK_PORT', '5003'))  # Default to 5002 (available port in 5000-8000 range)
     app.run(
         host='0.0.0.0',
         port=port,

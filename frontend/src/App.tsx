@@ -78,7 +78,7 @@ interface SavedTranscriptionSummary {
   filename: string;
   user_id?: string;
   assigned_user_id?: string;
-  status?: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review';
+  status?: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review' | 'validating' | 'passed';
   is_flagged?: boolean;
   is_double_flagged?: boolean;
   flag_reason?: string;
@@ -443,6 +443,43 @@ function App() {
     }
   };
 
+  const handleMarkAsPassed = async (transcriptionId: string) => {
+    const confirmed = window.confirm('Are you sure you want to mark this transcription as Passed?');
+    if (!confirmed) return;
+
+    setFlagging(transcriptionId); // Reuse flagging state for loading
+    try {
+      const config = getAxiosConfig();
+      
+      const response = await axios.post(
+        `${API_BASE_URL}/api/transcriptions/${transcriptionId}/pass`,
+        {},
+        config
+      );
+
+      if (response.data.success) {
+        alert('Transcription marked as Passed successfully');
+        // Reload the transcription list
+        fetchSavedTranscriptions();
+        // If currently viewing this transcription, reload it to show updated status
+        if (currentTranscriptionId === transcriptionId && transcriptionData) {
+          const filename = transcriptionData.metadata?.filename || '';
+          if (filename) {
+            // Reload the transcription to get updated status
+            loadTranscriptionByFilename(filename);
+          }
+        }
+      } else {
+        alert(`Error: ${response.data.error}`);
+      }
+    } catch (error: any) {
+      console.error('Error marking transcription as passed:', error);
+      alert(`Error: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setFlagging(null);
+    }
+  };
+
   const fetchVersionHistory = async (transcriptionId: string) => {
     setLoadingVersionHistory(true);
     try {
@@ -583,7 +620,7 @@ function App() {
     }
   };
 
-  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review') => {
+  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review' | 'validating' | 'passed') => {
     setUpdatingStatus(transcriptionId);
     try {
       const config = getAxiosConfig();
@@ -1492,6 +1529,8 @@ function App() {
                     <option value="completed">Completed</option>
                     <option value="pending">Pending</option>
                     <option value="flagged">Flagged</option>
+                    <option value="validating">Validating</option>
+                    <option value="passed">Passed</option>
                     <option value="double_flagged">Double Flagged</option>
                     <option value="reprocessed">Reprocessed</option>
                   </select>
@@ -1604,14 +1643,20 @@ function App() {
                                     <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                                       Assigned for Review
                                     </span>
+                                  ) : transcription.status === 'validating' ? (
+                                    <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">
+                                      Validating
+                                    </span>
                                   ) : (
                                     <select
                                       value={transcription.status || 'pending'}
-                                      onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review')}
+                                      onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review' | 'validating' | 'passed')}
                                       disabled={updatingStatus === transcription._id}
                                       className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
                                         (transcription as any).is_double_flagged
                                           ? 'bg-orange-100 text-orange-900'
+                                          : transcription.status === 'passed'
+                                          ? 'bg-lime-100 text-lime-800'
                                           : transcription.status === 'completed'
                                           ? 'bg-purple-100 text-purple-800'
                                           : transcription.status === 'done'
@@ -1625,36 +1670,48 @@ function App() {
                                       <option value="done">Done</option>
                                       <option value="completed">Completed</option>
                                       <option value="flagged">Flagged</option>
+                                      <option value="validating">Validating</option>
+                                      <option value="passed">Passed</option>
                                     </select>
                                   )
                                 ) : (
-                                  <span
-                                    className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                      (transcription as any).is_double_flagged
-                                        ? 'bg-orange-100 text-orange-900 border border-orange-300'
-                                        : transcription.status === 'completed'
-                                        ? 'bg-purple-100 text-purple-800'
-                                        : transcription.status === 'done'
-                                        ? 'bg-green-100 text-green-800'
+                                  <>
+                                    <span
+                                      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                        (transcription as any).is_double_flagged
+                                          ? 'bg-orange-100 text-orange-900 border border-orange-300'
+                                          : transcription.status === 'passed'
+                                          ? 'bg-lime-100 text-lime-800'
+                                          : transcription.status === 'validating'
+                                          ? 'bg-indigo-100 text-indigo-800'
+                                          : transcription.status === 'completed'
+                                          ? 'bg-purple-100 text-purple-800'
+                                          : transcription.status === 'done'
+                                          ? 'bg-green-100 text-green-800'
+                                          : transcription.status === 'assigned_for_review'
+                                          ? 'bg-blue-100 text-blue-800'
+                                          : transcription.status === 'flagged'
+                                          ? 'bg-red-100 text-red-800'
+                                          : 'bg-yellow-100 text-yellow-800'
+                                      }`}
+                                    >
+                                      {(transcription as any).is_double_flagged
+                                        ? 'Double Flagged'
+                                        : transcription.status === 'passed'
+                                        ? 'Passed'
+                                        : transcription.status === 'validating'
+                                        ? 'Validating'
+                                        : transcription.status === 'completed' 
+                                        ? 'Completed' 
+                                        : transcription.status === 'done' 
+                                        ? 'Done' 
                                         : transcription.status === 'assigned_for_review'
-                                        ? 'bg-blue-100 text-blue-800'
-                                        : transcription.status === 'flagged'
-                                        ? 'bg-red-100 text-red-800'
-                                        : 'bg-yellow-100 text-yellow-800'
-                                    }`}
-                                  >
-                                    {(transcription as any).is_double_flagged
-                                      ? 'Double Flagged'
-                                      : transcription.status === 'completed' 
-                                      ? 'Completed' 
-                                      : transcription.status === 'done' 
-                                      ? 'Done' 
-                                      : transcription.status === 'assigned_for_review'
-                                      ? 'Assigned for Review'
-                                      : transcription.status === 'flagged' 
-                                      ? 'Flagged' 
-                                      : 'Pending'}
-                                  </span>
+                                        ? 'Assigned for Review'
+                                        : transcription.status === 'flagged' 
+                                        ? 'Flagged' 
+                                        : 'Pending'}
+                                    </span>
+                                  </>
                                 )}
                                 {updatingStatus === transcription._id && (
                                   <Loader2 className="inline-block h-3 w-3 ml-2 animate-spin text-gray-500" />
@@ -1934,6 +1991,36 @@ function App() {
                       )}
                     </button>
                   )}
+                  {currentTranscriptionId && (() => {
+                    const savedRecord = allSavedTranscriptions.find(t => t._id === currentTranscriptionId);
+                    const currentStatus = savedRecord?.status;
+                    const isValidating = currentStatus === 'validating';
+                    const isFinalTester = !getUserInfo().isAdmin; // Non-admin users are final testers when assigned validating files
+                    
+                    if (isValidating && isFinalTester) {
+                      return (
+                        <button
+                          onClick={() => currentTranscriptionId && handleMarkAsPassed(currentTranscriptionId)}
+                          disabled={flagging === currentTranscriptionId}
+                          className="bg-lime-600 hover:bg-lime-700 disabled:bg-gray-400 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center"
+                          title="Mark this transcription as Passed after validating"
+                        >
+                          {flagging === currentTranscriptionId ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              Processing...
+                            </>
+                          ) : (
+                            <>
+                              <Check className="h-4 w-4 mr-2" />
+                              Pass
+                            </>
+                          )}
+                        </button>
+                      );
+                    }
+                    return null;
+                  })()}
                   {/* <button
                     onClick={saveToDatabase}
                     disabled={savingToDatabase}

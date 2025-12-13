@@ -586,6 +586,10 @@ class StorageManager:
                     'error': f'Transcription not found with ID: {document_id} in any collection'
                 }
             
+            # Check if this is a first assignment (previous assigned_user_id is None or doesn't exist)
+            previous_assigned_user_id = current_doc.get('assigned_user_id')
+            is_first_assignment = previous_assigned_user_id is None
+            
             # Prepare update fields
             update_fields = {
                 'assigned_user_id': assigned_user_id_str,
@@ -810,7 +814,7 @@ class StorageManager:
         
         Args:
             document_id: MongoDB document ID
-            status: Status to set ('done', 'pending', 'flagged', or 'completed')
+            status: Status to set ('done', 'pending', 'flagged', 'completed', 'validating', or 'passed')
             
         Returns:
             Dictionary with update result
@@ -822,10 +826,10 @@ class StorageManager:
                     'error': 'MongoDB not initialized'
                 }
             
-            if status not in ['done', 'pending', 'flagged', 'completed']:
+            if status not in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
                 return {
                     'success': False,
-                    'error': f'Invalid status: {status}. Must be one of: done, pending, flagged, completed'
+                    'error': f'Invalid status: {status}. Must be one of: done, pending, flagged, completed, validating, passed'
                 }
             
             from bson import ObjectId
@@ -840,12 +844,25 @@ class StorageManager:
                     'error': f'Invalid transcription ID format: {str(e)}'
                 }
             
-            # Get current document to check current status
-            current_doc = self.collection.find_one({'_id': obj_id})
+            # Find the document in any collection (transcriptions or telugu_transcriptions)
+            current_doc = None
+            target_collection = None
+            collections_to_check = ['transcriptions', 'telugu_transcriptions']
+            
+            for coll_name in collections_to_check:
+                coll = self.db[coll_name]
+                doc = coll.find_one({'_id': obj_id})
+                if doc:
+                    current_doc = doc
+                    target_collection = coll
+                    if coll_name != self.mongodb_collection:
+                        print(f"📝 Found transcription in collection '{coll_name}' for status update")
+                    break
+            
             if not current_doc:
                 return {
                     'success': False,
-                    'error': 'Transcription not found'
+                    'error': f'Transcription not found with ID: {document_id} in any collection'
                 }
             
             # Prepare update data
@@ -865,8 +882,8 @@ class StorageManager:
                 if not current_doc.get('completed_at'):
                     update_fields['completed_at'] = datetime.now(timezone.utc)
             
-            # Update the manual_status field (admin override)
-            update_result = self.collection.update_one(
+            # Update the manual_status field (admin override) in the correct collection
+            update_result = target_collection.update_one(
                 {'_id': obj_id},
                 {'$set': update_fields}
             )
@@ -922,8 +939,29 @@ class StorageManager:
                     'error': f'Invalid transcription ID format: {str(e)}'
                 }
             
-            # Update the remarks field
-            update_result = self.collection.update_one(
+            # Find the document in any collection (transcriptions or telugu_transcriptions)
+            current_doc = None
+            target_collection = None
+            collections_to_check = ['transcriptions', 'telugu_transcriptions']
+            
+            for coll_name in collections_to_check:
+                coll = self.db[coll_name]
+                doc = coll.find_one({'_id': obj_id})
+                if doc:
+                    current_doc = doc
+                    target_collection = coll
+                    if coll_name != self.mongodb_collection:
+                        print(f"📝 Found transcription in collection '{coll_name}' for remarks update")
+                    break
+            
+            if not current_doc:
+                return {
+                    'success': False,
+                    'error': f'Transcription not found with ID: {document_id} in any collection'
+                }
+            
+            # Update the remarks field in the correct collection
+            update_result = target_collection.update_one(
                 {'_id': obj_id},
                 {
                     '$set': {
@@ -1097,10 +1135,19 @@ class StorageManager:
             if status:
                 if status == 'flagged':
                     # Flagged if is_flagged is True OR manual_status is 'flagged'
+                    # BUT exclude double flagged files (double flagged has higher priority)
                     additional_filters.append({
-                        '$or': [
-                            {'is_flagged': True},
-                            {'manual_status': 'flagged'}
+                        '$and': [
+                            {
+                                '$or': [
+                                    {'is_flagged': True},
+                                    {'manual_status': 'flagged'}
+                                ]
+                            },
+                            {'$or': [
+                                {'is_double_flagged': False},
+                                {'is_double_flagged': {'$exists': False}}
+                            ]}
                         ]
                     })
                 elif status == 'double_flagged':
@@ -1108,7 +1155,16 @@ class StorageManager:
                     additional_filters.append({'is_double_flagged': True})
                 elif status == 'reprocessed':
                     # Files that have been reprocessed (has_been_reprocessed is True)
-                    additional_filters.append({'has_been_reprocessed': True})
+                    # BUT exclude double flagged files (double flagged has higher priority)
+                    additional_filters.append({
+                        '$and': [
+                            {'has_been_reprocessed': True},
+                            {'$or': [
+                                {'is_double_flagged': False},
+                                {'is_double_flagged': {'$exists': False}}
+                            ]}
+                        ]
+                    })
                 elif status == 'done':
                     # Done if NOT flagged AND NOT completed AND (manual_status='done' OR (manual_status unset/invalid AND assigned==user))
                     additional_filters.append({
@@ -1116,15 +1172,15 @@ class StorageManager:
                             # Not flagged
                             {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
                             {'manual_status': {'$ne': 'flagged'}},
-                            # Not completed
-                            {'manual_status': {'$ne': 'completed'}},
+                            # Not completed, validating, or passed
+                            {'manual_status': {'$nin': ['completed', 'validating', 'passed']}},
                             # Done condition
                             {'$or': [
                                 {'manual_status': 'done'},
                                 {
                                     '$and': [
-                                        # manual_status not active (not done/pending/flagged/completed)
-                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed']}},
+                                        # manual_status not active (not done/pending/flagged/completed/validating/passed)
+                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']}},
                                         {'assigned_user_id': {'$ne': None}},
                                         {'user_id': {'$ne': None}},
                                         {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
@@ -1140,14 +1196,14 @@ class StorageManager:
                             # Not flagged
                             {'$or': [{'is_flagged': False}, {'is_flagged': {'$exists': False}}]},
                             {'manual_status': {'$ne': 'flagged'}},
-                            # Not completed
-                            {'manual_status': {'$ne': 'completed'}},
+                            # Not completed, validating, or passed
+                            {'manual_status': {'$nin': ['completed', 'validating', 'passed']}},
                             # Not done condition
                             {'$nor': [
                                 {'manual_status': 'done'},
                                 {
                                     '$and': [
-                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed']}},
+                                        {'manual_status': {'$nin': ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']}},
                                         {'assigned_user_id': {'$ne': None}},
                                         {'user_id': {'$ne': None}},
                                         {'$expr': {'$eq': ['$assigned_user_id', '$user_id']}}
@@ -1170,6 +1226,12 @@ class StorageManager:
                     # Assigned for review: has reassign action in review_history and assigned_user_id != user_id
                     # This will be handled in post-filtering since it requires checking review_history
                     pass
+                elif status == 'validating':
+                    # Validating: manual_status is 'validating'
+                    additional_filters.append({'manual_status': 'validating'})
+                elif status == 'passed':
+                    # Passed: manual_status is 'passed'
+                    additional_filters.append({'manual_status': 'passed'})
             
             # Assigned user filter (current assignee)
             if assigned_user:
@@ -1368,52 +1430,62 @@ class StorageManager:
                 # Flagged status has highest priority - flagged files stay flagged
                 if is_flagged:
                     computed_status = 'flagged'
-                # Completed status has second-highest priority - completed files stay completed
-                # This must be checked BEFORE reassignment logic to prevent completed files from
-                # being shown as "assigned_for_review" when edited by admin
+                # Special statuses (validating, passed, completed) have high priority - they should always be respected
+                # This must be checked BEFORE reassignment logic to prevent these statuses from
+                # being overridden by "assigned_for_review" when reassigned
+                elif manual_status in ['validating', 'passed']:
+                    computed_status = manual_status
                 elif manual_status == 'completed':
                     computed_status = 'completed'
                 # Check if file has been reassigned (has reassign action in review_history)
                 # and new assignee hasn't saved yet (assigned_user_id != user_id)
                 # This check should happen before other manual_status checks to override them when reassigned
                 # IMPORTANT: This logic should NOT apply if the last person who saved is an admin
+                # IMPORTANT: This logic should NOT override manual_status if it's explicitly set by admin
                 elif assigned_user_id:
-                    review_history = doc.get('review_history', [])
-                    has_reassign_action = any(entry.get('action') == 'reassign' for entry in review_history)
-                    
-                    # Check if last saver (user_id) is an admin
-                    is_last_saver_admin = False
-                    if doc_user_id:
-                        try:
-                            from bson import ObjectId
-                            users_collection = self.db['users']
-                            user_doc = users_collection.find_one({'_id': ObjectId(doc_user_id)})
-                            if user_doc:
-                                is_last_saver_admin = user_doc.get('is_admin', False)
-                        except Exception:
-                            # If we can't check, assume not admin
-                            pass
-                    
-                    # Only show "assigned_for_review" if:
-                    # 1. File was reassigned AND
-                    # 2. assigned_user_id != user_id AND
-                    # 3. Last person who saved (user_id) is NOT an admin
-                    if has_reassign_action and doc_user_id and str(assigned_user_id) != str(doc_user_id) and not is_last_saver_admin:
-                        # File was reassigned and new assignee hasn't saved yet
-                        # This overrides manual_status to show "Assigned for Review"
-                        computed_status = 'assigned_for_review'
-                    # Use manual_status if set (by admin or when saving changes)
-                    # But only if not reassigned (reassignment already handled above)
-                    elif manual_status and manual_status in ['done', 'pending', 'flagged']:
+                    # PRIORITY: Check for special statuses (validating, passed, completed) FIRST before reassignment logic
+                    # These statuses should always be respected when manually set
+                    if manual_status in ['validating', 'passed', 'completed']:
                         computed_status = manual_status
-                    elif doc_user_id and str(assigned_user_id) == str(doc_user_id):
-                        # Assigned and assigned user has saved changes
-                        computed_status = 'done'
+                    # If manual_status is explicitly set, always respect it (admin override or user save)
+                    # This ensures admin status changes take priority over reassignment logic
+                    elif manual_status and manual_status in ['done', 'pending', 'flagged']:
+                        # Always respect manual_status when it's explicitly set
+                        computed_status = manual_status
                     else:
-                        # Assigned but assigned user hasn't saved yet (first assignment)
-                        computed_status = 'pending'
+                        # No manual_status set, check reassignment status
+                        review_history = doc.get('review_history', [])
+                        has_reassign_action = any(entry.get('action') == 'reassign' for entry in review_history)
+                        
+                        # Check if last saver (user_id) is an admin
+                        is_last_saver_admin = False
+                        if doc_user_id:
+                            try:
+                                from bson import ObjectId
+                                users_collection = self.db['users']
+                                user_doc = users_collection.find_one({'_id': ObjectId(doc_user_id)})
+                                if user_doc:
+                                    is_last_saver_admin = user_doc.get('is_admin', False)
+                            except Exception:
+                                # If we can't check, assume not admin
+                                pass
+                        
+                        # Only show "assigned_for_review" if:
+                        # 1. File was reassigned AND
+                        # 2. assigned_user_id != user_id AND
+                        # 3. Last person who saved (user_id) is NOT an admin
+                        if has_reassign_action and doc_user_id and str(assigned_user_id) != str(doc_user_id) and not is_last_saver_admin:
+                            # File was reassigned and new assignee hasn't saved yet
+                            # This overrides manual_status to show "Assigned for Review"
+                            computed_status = 'assigned_for_review'
+                        elif doc_user_id and str(assigned_user_id) == str(doc_user_id):
+                            # Assigned and assigned user has saved changes
+                            computed_status = 'done'
+                        else:
+                            # Assigned but assigned user hasn't saved yet (first assignment)
+                            computed_status = 'pending'
                 # Use manual_status if set and file is not assigned
-                elif manual_status and manual_status in ['done', 'pending', 'flagged']:
+                elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
                     computed_status = manual_status
                 else:
                     computed_status = 'pending'  # Not assigned
@@ -1481,7 +1553,8 @@ class StorageManager:
                     'review_round_edited_words_count': review_round_edited_words_count,  # Number of words edited in review round
                     'remarks': doc.get('remarks'),
                     'review_round': doc.get('review_round', 0),
-                    'review_history': doc.get('review_history', [])
+                    'review_history': doc.get('review_history', []),
+                    'passed_by': doc.get('passed_by')
                 }
                 transcriptions.append(summary)
             
@@ -1534,6 +1607,9 @@ class StorageManager:
                 
                 if is_flagged:
                     computed_status = 'flagged'
+                elif manual_status in ['validating', 'passed']:
+                    # PRIORITY: validating and passed statuses should always be respected
+                    computed_status = manual_status
                 elif manual_status == 'completed':
                     computed_status = 'completed'
                 elif assigned_user_id:
@@ -1559,7 +1635,7 @@ class StorageManager:
                         computed_status = 'done'
                     else:
                         computed_status = 'pending'
-                elif manual_status and manual_status in ['done', 'pending', 'flagged']:
+                elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
                     computed_status = manual_status
                 else:
                     computed_status = 'pending'
@@ -1615,7 +1691,8 @@ class StorageManager:
                     'review_round_edited_words_count': review_round_edited_words_count,
                     'remarks': doc.get('remarks'),
                     'review_round': doc.get('review_round', 0),
-                    'review_history': doc.get('review_history', [])
+                    'review_history': doc.get('review_history', []),
+                    'passed_by': doc.get('passed_by')
                 }
                 transcriptions.append(summary)
             
@@ -1742,6 +1819,8 @@ class StorageManager:
             pending_count = 0
             flagged_count = 0
             completed_count = 0
+            validating_count = 0
+            passed_count = 0
             double_flagged_count = 0
             reprocessed_count = 0
             total_done_duration = 0.0  # Total duration in seconds
@@ -1771,17 +1850,33 @@ class StorageManager:
                 manual_status = doc.get('manual_status')
                 review_round = doc.get('review_round', 0)
                 
-                # Flagged status has highest priority
+                # Flagged status has highest priority - flagged files stay flagged
                 if is_flagged:
                     status = 'flagged'
-                # Use manual_status if set (including 'completed')
-                elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed']:
+                # Special statuses (validating, passed, completed) have high priority - they should always be respected
+                # This must be checked BEFORE other logic to prevent these statuses from being overridden
+                elif manual_status in ['validating', 'passed']:
                     status = manual_status
-                # Status is "done" only if assigned AND the user_id matches assigned_user_id
-                elif assigned_user_id and doc_user_id and str(assigned_user_id) == str(doc_user_id):
-                    status = 'done'
+                elif manual_status == 'completed':
+                    status = 'completed'
+                elif assigned_user_id:
+                    # PRIORITY: Check for special statuses (validating, passed) FIRST
+                    # These statuses should always be respected when manually set
+                    if manual_status in ['validating', 'passed']:
+                        status = manual_status
+                    elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed']:
+                        status = manual_status
+                    elif doc_user_id and str(assigned_user_id) == str(doc_user_id):
+                        # Assigned and assigned user has saved changes
+                        status = 'done'
+                    else:
+                        # Assigned but assigned user hasn't saved yet (first assignment)
+                        status = 'pending'
+                # Use manual_status if set and file is not assigned
+                elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
+                    status = manual_status
                 else:
-                    status = 'pending'
+                    status = 'pending'  # Not assigned
                 
                 # Count by status and accumulate duration for done/completed files
                 if status == 'completed':
@@ -1792,6 +1887,10 @@ class StorageManager:
                     total_done_duration += float(audio_duration)
                 elif status == 'flagged':
                     flagged_count += 1
+                elif status == 'validating':
+                    validating_count += 1
+                elif status == 'passed':
+                    passed_count += 1
                 else:
                     pending_count += 1
             
@@ -1819,17 +1918,33 @@ class StorageManager:
                 manual_status = doc.get('manual_status')
                 review_round = doc.get('review_round', 0)
                 
-                # Flagged status has highest priority
+                # Flagged status has highest priority - flagged files stay flagged
                 if is_flagged:
                     status = 'flagged'
-                # Use manual_status if set (including 'completed')
-                elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed']:
+                # Special statuses (validating, passed, completed) have high priority - they should always be respected
+                # This must be checked BEFORE other logic to prevent these statuses from being overridden
+                elif manual_status in ['validating', 'passed']:
                     status = manual_status
-                # Status is "done" only if assigned AND the user_id matches assigned_user_id
-                elif assigned_user_id and doc_user_id and str(assigned_user_id) == str(doc_user_id):
-                    status = 'done'
+                elif manual_status == 'completed':
+                    status = 'completed'
+                elif assigned_user_id:
+                    # PRIORITY: Check for special statuses (validating, passed) FIRST
+                    # These statuses should always be respected when manually set
+                    if manual_status in ['validating', 'passed']:
+                        status = manual_status
+                    elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed']:
+                        status = manual_status
+                    elif doc_user_id and str(assigned_user_id) == str(doc_user_id):
+                        # Assigned and assigned user has saved changes
+                        status = 'done'
+                    else:
+                        # Assigned but assigned user hasn't saved yet (first assignment)
+                        status = 'pending'
+                # Use manual_status if set and file is not assigned
+                elif manual_status and manual_status in ['done', 'pending', 'flagged', 'completed', 'validating', 'passed']:
+                    status = manual_status
                 else:
-                    status = 'pending'
+                    status = 'pending'  # Not assigned
                 
                 # Count by status and accumulate duration for done/completed files
                 if status == 'completed':
@@ -1840,6 +1955,10 @@ class StorageManager:
                     total_done_duration += float(audio_duration)
                 elif status == 'flagged':
                     flagged_count += 1
+                elif status == 'validating':
+                    validating_count += 1
+                elif status == 'passed':
+                    passed_count += 1
                 else:
                     pending_count += 1
             
@@ -1847,6 +1966,8 @@ class StorageManager:
             print(f"   Total: {total_count}")
             print(f"   Done: {done_count}")
             print(f"   Completed: {completed_count}")
+            print(f"   Validating: {validating_count}")
+            print(f"   Passed: {passed_count}")
             print(f"   Pending: {pending_count}")
             print(f"   Flagged: {flagged_count}")
             
@@ -1858,6 +1979,8 @@ class StorageManager:
                     'pending': pending_count,
                     'flagged': flagged_count,
                     'completed': completed_count,
+                    'validating': validating_count,
+                    'passed': passed_count,
                     'double_flagged': double_flagged_count,
                     'reprocessed': reprocessed_count,
                     'total_done_duration': total_done_duration,
@@ -1896,12 +2019,25 @@ class StorageManager:
             
             from bson import ObjectId
             
-            # Get the current document to check if it exists
-            current_doc = self.collection.find_one({'_id': ObjectId(document_id)})
+            # Find the document in any collection (transcriptions or telugu_transcriptions)
+            current_doc = None
+            target_collection = None
+            collections_to_check = ['transcriptions', 'telugu_transcriptions']
+            
+            for coll_name in collections_to_check:
+                coll = self.db[coll_name]
+                doc = coll.find_one({'_id': ObjectId(document_id)})
+                if doc:
+                    current_doc = doc
+                    target_collection = coll
+                    if coll_name != self.mongodb_collection:
+                        print(f"📝 Found transcription in collection '{coll_name}' for update")
+                    break
+            
             if not current_doc:
                 return {
                     'success': False,
-                    'error': 'Transcription not found'
+                    'error': f'Transcription not found with ID: {document_id} in any collection'
                 }
             
             # Get current transcription data
@@ -2127,12 +2263,13 @@ class StorageManager:
                 update_data['review_round'] = review_round
             
             # Initialize review_history if it doesn't exist
-            current_doc = self.collection.find_one({'_id': ObjectId(document_id)})
+            # current_doc was already fetched above, use it here
             if current_doc and 'review_history' not in current_doc:
                 update_data['review_history'] = []
             
             # Update document by ID only (no user_id filtering)
-            update_result = self.collection.update_one(
+            # Use the target_collection we found earlier
+            update_result = target_collection.update_one(
                 {'_id': ObjectId(document_id)},
                 {
                     '$set': update_data
@@ -2189,8 +2326,18 @@ class StorageManager:
                 print(f"❌ Invalid transcription ID format: {document_id}")
                 return None
             
-            # Get document by ID to check access
-            document = self.collection.find_one({'_id': obj_id})
+            # Find the document in any collection (transcriptions or telugu_transcriptions)
+            document = None
+            collections_to_check = ['transcriptions', 'telugu_transcriptions']
+            
+            for coll_name in collections_to_check:
+                coll = self.db[coll_name]
+                doc = coll.find_one({'_id': obj_id})
+                if doc:
+                    document = doc
+                    if coll_name != self.mongodb_collection:
+                        print(f"📝 Found transcription in collection '{coll_name}' for version history")
+                    break
             
             if not document:
                 return None
@@ -2263,13 +2410,23 @@ class StorageManager:
                     'error': f'Invalid transcription ID format: {str(e)}'
                 }
             
-            # Get document to check access
-            document = self.collection.find_one({'_id': obj_id})
+            # Find the document in any collection (transcriptions or telugu_transcriptions)
+            document = None
+            collections_to_check = ['transcriptions', 'telugu_transcriptions']
+            
+            for coll_name in collections_to_check:
+                coll = self.db[coll_name]
+                doc = coll.find_one({'_id': obj_id})
+                if doc:
+                    document = doc
+                    if coll_name != self.mongodb_collection:
+                        print(f"📝 Found transcription in collection '{coll_name}' for clearing version history")
+                    break
             
             if not document:
                 return {
                     'success': False,
-                    'error': 'Transcription not found'
+                    'error': f'Transcription not found with ID: {document_id} in any collection'
                 }
             
             # Check access: admins can clear all, regular users only assigned ones

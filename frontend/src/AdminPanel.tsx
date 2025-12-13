@@ -39,6 +39,7 @@ interface User {
   email: string;
   name: string;
   is_admin: boolean;
+  is_final_tester?: boolean;
 }
 
 interface Transcription {
@@ -49,7 +50,7 @@ interface Transcription {
   language: string;
   assigned_user_id?: string;
   user_id?: string;
-  status?: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review';
+  status?: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review' | 'validating' | 'passed';
   review_round?: number;
   review_history?: Array<{
     round: number;
@@ -68,6 +69,7 @@ interface Transcription {
   is_flagged?: boolean;
   audio_duration?: number;
   remarks?: string;
+  passed_by?: string;
 }
 
 function AdminPanel() {
@@ -77,12 +79,11 @@ function AdminPanel() {
   const [loading, setLoading] = useState(false);
   const [assigning, setAssigning] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedUserId, setSelectedUserId] = useState<string>('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(20); // Items per page (default: 20)
   const [totalItems, setTotalItems] = useState(0); // Total items from backend
-  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, completed: 0, double_flagged: 0, reprocessed: 0, total_done_duration: 0, total_completed_duration: 0 }); // Statistics from backend
+  const [statistics, setStatistics] = useState({ total: 0, done: 0, pending: 0, flagged: 0, completed: 0, validating: 0, passed: 0, double_flagged: 0, reprocessed: 0, total_done_duration: 0, total_completed_duration: 0 }); // Statistics from backend
   const [usersLoaded, setUsersLoaded] = useState(false); // Track if users have been loaded
   const [selectedTranscriptions, setSelectedTranscriptions] = useState<Set<string>>(new Set());
   const [bulkAssignUserId, setBulkAssignUserId] = useState<string>('');
@@ -98,6 +99,7 @@ function AdminPanel() {
   const [downloading, setDownloading] = useState(false);
   const [downloadingCompleted, setDownloadingCompleted] = useState(false);
   const [downloadingSelectedCompleted, setDownloadingSelectedCompleted] = useState(false);
+  const [downloadingPassed, setDownloadingPassed] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [flagging, setFlagging] = useState<string | null>(null);
@@ -241,26 +243,6 @@ function AdminPanel() {
     }
   };
 
-  const handleAssign = async (transcriptionId: string, userId: string) => {
-    setAssigning(transcriptionId);
-    try {
-      const config = getAxiosConfig();
-      const response = await axios.post(
-        `${API_BASE_URL}/api/admin/transcriptions/${transcriptionId}/assign`,
-        { assigned_user_id: userId },
-        config
-      );
-
-      if (response.data.success) {
-        setMessage({ type: 'success', text: 'Transcription assigned successfully' });
-        loadData(); // Reload data
-      }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.response?.data?.error || 'Failed to assign transcription' });
-    } finally {
-      setAssigning(null);
-    }
-  };
 
   const handleUnassign = async (transcriptionId: string) => {
     setAssigning(transcriptionId);
@@ -550,6 +532,54 @@ function AdminPanel() {
     }
   };
 
+  const handleDownloadPassedTranscriptions = async () => {
+    setDownloadingPassed(true);
+    try {
+      const config = getAxiosConfig();
+
+      // Make request to download endpoint with responseType: 'blob' for binary data
+      const response = await axios.get(
+        `${API_BASE_URL}/api/admin/transcriptions/download-passed`,
+        {
+          ...config,
+          responseType: 'blob'
+        }
+      );
+
+      // Create a blob URL and trigger download
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+
+      // Get filename from Content-Disposition header or use default
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = 'passed_transcriptions.zip';
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setMessage({ type: 'success', text: 'Download completed successfully' });
+    } catch (error: any) {
+      console.error('❌ Error downloading passed transcriptions:', error);
+      const errorMessage = error.response?.data?.error || error.message || 'Failed to download passed transcriptions';
+      setMessage({ type: 'error', text: errorMessage });
+    } finally {
+      setDownloadingPassed(false);
+    }
+  };
+
   const handleDownloadSelectedCompleted = async () => {
     if (selectedTranscriptions.size === 0) {
       setMessage({ type: 'error', text: 'Please select at least one file to download' });
@@ -685,7 +715,7 @@ function AdminPanel() {
     }
   };
 
-  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review') => {
+  const handleStatusChange = async (transcriptionId: string, newStatus: 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review' | 'validating' | 'passed') => {
     setUpdatingStatus(transcriptionId);
     try {
       const config = getAxiosConfig();
@@ -773,22 +803,35 @@ function AdminPanel() {
   };
 
   const getOriginalAssignee = (transcription: Transcription): string | undefined => {
-    // If there's no review_history, current assigned_user_id is the original
+    // Original Assignee = The user who performed first round testing (marked file as "done")
+    // This is found by looking at the first "save" action where new_status became "done"
+    
     if (!transcription.review_history || transcription.review_history.length === 0) {
-      return transcription.assigned_user_id;
+      // If no review_history, check if status is done and use user_id field
+      if (transcription.status === 'done' && transcription.user_id) {
+        return transcription.user_id;
+      }
+      return undefined;
     }
     
-    // Find the first "reassign" action in review_history to get the original assignee
-    const reassignAction = transcription.review_history.find(
-      (entry) => entry.action === 'reassign'
-    );
+    // Find the first "save" action where new_status is "done" (first round testing)
+    const saveActions = transcription.review_history
+      .filter((entry) => entry.action === 'save' && entry.new_status === 'done')
+      .sort((a, b) => {
+        // Sort by timestamp (oldest first) to find the very first one
+        const timeA = new Date(a.timestamp).getTime();
+        const timeB = new Date(b.timestamp).getTime();
+        return timeA - timeB;
+      });
     
-    if (reassignAction && reassignAction.previous_assigned_user_id) {
-      return reassignAction.previous_assigned_user_id;
+    if (saveActions.length > 0) {
+      // The user_id from the first save action that marked it as "done" is the original assignee
+      const firstDoneSave = saveActions[0];
+      return firstDoneSave.user_id || undefined;
     }
     
-    // If no reassign action found, current assigned_user_id is the original
-    return transcription.assigned_user_id;
+    // Fallback: If no save action found with status "done", check user_id field
+    return transcription.user_id;
   };
 
   const handleLoadTranscription = (filename: string) => {
@@ -896,48 +939,66 @@ function AdminPanel() {
                 <p className="text-gray-600 mt-2">Manage transcription assignments</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <button
                 onClick={() => navigate('/admin/teams')}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                 title="View team management"
               >
-                <Users className="h-5 w-5" />
+                <Users className="h-4 w-4" />
                 <span className="hidden sm:inline">Team Management</span>
               </button>
               <button
                 onClick={handleDownloadDoneTranscriptions}
                 disabled={downloading || downloadingCompleted || downloadingSelectedCompleted}
-                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 title="Download all done transcriptions as ZIP"
               >
                 {downloading ? (
                   <>
-                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <Loader2 className="h-4 w-4 animate-spin" />
                     <span className="hidden sm:inline">Downloading...</span>
                   </>
                 ) : (
                   <>
-                    <Download className="h-5 w-5" />
+                    <Download className="h-4 w-4" />
                     <span className="hidden sm:inline">Download Done Files</span>
                   </>
                 )}
               </button>
               <button
                 onClick={handleDownloadCompletedTranscriptions}
-                disabled={downloadingCompleted || downloading || downloadingSelectedCompleted}
-                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                disabled={downloadingCompleted || downloading || downloadingSelectedCompleted || downloadingPassed}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 title="Download all completed transcriptions as ZIP"
               >
                 {downloadingCompleted ? (
                   <>
-                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <Loader2 className="h-4 w-4 animate-spin" />
                     <span className="hidden sm:inline">Downloading...</span>
                   </>
                 ) : (
                   <>
-                    <Download className="h-5 w-5" />
+                    <Download className="h-4 w-4" />
                     <span className="hidden sm:inline">Download All Completed Files</span>
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handleDownloadPassedTranscriptions}
+                disabled={downloadingPassed || downloading || downloadingCompleted || downloadingSelectedCompleted}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-lime-600 text-white rounded-lg hover:bg-lime-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title="Download all passed transcriptions as ZIP"
+              >
+                {downloadingPassed ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="hidden sm:inline">Downloading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-4 w-4" />
+                    <span className="hidden sm:inline">Download All Passed Files</span>
                   </>
                 )}
               </button>
@@ -1074,6 +1135,36 @@ function AdminPanel() {
                 </div>
               </div>
             </div>
+
+            {/* Validating Files Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-indigo-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Validating</p>
+                  <p className="text-3xl font-bold text-gray-800">
+                    {statistics.validating || 0}
+                  </p>
+                </div>
+                <div className="bg-indigo-100 rounded-full p-3">
+                  <FileText className="h-8 w-8 text-indigo-600" />
+                </div>
+              </div>
+            </div>
+
+            {/* Passed Files Card */}
+            <div className="bg-white rounded-lg shadow-lg p-6 border-l-4 border-lime-500">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">Passed</p>
+                  <p className="text-3xl font-bold text-gray-800">
+                    {statistics.passed || 0}
+                  </p>
+                </div>
+                <div className="bg-lime-100 rounded-full p-3">
+                  <CheckSquare className="h-8 w-8 text-lime-600" />
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="mb-6 space-y-4">
@@ -1103,6 +1194,8 @@ function AdminPanel() {
                   <option value="">All Status</option>
                   <option value="done">Done</option>
                   <option value="completed">Completed</option>
+                  <option value="validating">Validating</option>
+                  <option value="passed">Passed</option>
                   <option value="pending">Pending</option>
                   {/* <option value="assigned_for_review">Assigned for Review</option> */}
                   <option value="flagged">Flagged</option>
@@ -1242,6 +1335,21 @@ function AdminPanel() {
                   <span className="text-sm font-medium text-blue-900">
                     {selectedTranscriptions.size} file{selectedTranscriptions.size > 1 ? 's' : ''} selected
                   </span>
+                  {(() => {
+                    // Check if any selected transcription is completed
+                    const selectedIds = Array.from(selectedTranscriptions);
+                    const hasCompletedFiles = allTranscriptions.some(t => 
+                      selectedIds.includes(t._id) && t.status === 'completed'
+                    );
+                    if (hasCompletedFiles) {
+                      return (
+                        <span className="text-xs text-purple-700 bg-purple-100 px-2 py-1 rounded">
+                          ⚠️ Completed files can only be assigned to Final Testers
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <button
@@ -1269,11 +1377,27 @@ function AdminPanel() {
                     className="text-sm border border-gray-300 rounded px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
                   >
                     <option value="">Select user to assign...</option>
-                    {users.map((user) => (
-                      <option key={user._id} value={user._id}>
-                        {user.name || user.username}
-                      </option>
-                    ))}
+                    {(() => {
+                      // Check if any selected transcription is completed
+                      const selectedIds = Array.from(selectedTranscriptions);
+                      const hasCompletedFiles = allTranscriptions.some(t => 
+                        selectedIds.includes(t._id) && (t.status === 'completed' || t.status === 'validating')
+                      );
+                      // If completed files selected, only show final testers
+                      const usersToShow = hasCompletedFiles 
+                        ? users.filter(u => u.is_final_tester)
+                        : users;
+                      
+                      if (hasCompletedFiles && usersToShow.length === 0) {
+                        return <option value="" disabled>No final testers available</option>;
+                      }
+                      
+                      return usersToShow.map((user) => (
+                        <option key={user._id} value={user._id}>
+                          {user.name || user.username} {user.is_final_tester ? '(Final Tester)' : ''}
+                        </option>
+                      ));
+                    })()}
                   </select>
                   <button
                     onClick={handleBulkAssign}
@@ -1299,11 +1423,27 @@ function AdminPanel() {
                     className="text-sm border border-gray-300 rounded px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 disabled:opacity-50"
                   >
                     <option value="">Select user to reassign...</option>
-                    {users.map((user) => (
-                      <option key={user._id} value={user._id}>
-                        {user.name || user.username}
-                      </option>
-                    ))}
+                    {(() => {
+                      // Check if any selected transcription is completed
+                      const selectedIds = Array.from(selectedTranscriptions);
+                      const hasCompletedFiles = allTranscriptions.some(t => 
+                        selectedIds.includes(t._id) && (t.status === 'completed' || t.status === 'validating')
+                      );
+                      // If completed files selected, only show final testers
+                      const usersToShow = hasCompletedFiles 
+                        ? users.filter(u => u.is_final_tester)
+                        : users;
+                      
+                      if (hasCompletedFiles && usersToShow.length === 0) {
+                        return <option value="" disabled>No final testers available</option>;
+                      }
+                      
+                      return usersToShow.map((user) => (
+                        <option key={user._id} value={user._id}>
+                          {user.name || user.username} {user.is_final_tester ? '(Final Tester)' : ''}
+                        </option>
+                      ));
+                    })()}
                   </select>
                   <button
                     onClick={handleBulkReassign}
@@ -1499,33 +1639,43 @@ function AdminPanel() {
                             <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                               Assigned for Review
                             </span>
+                          ) : transcription.status === 'validating' ? (
+                            <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">
+                              Validating
+                            </span>
                           ) : (transcription as any).is_double_flagged ? (
                             <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-900 border border-orange-300">
                               Double Flagged
                             </span>
                           ) : (
                             <>
-                              <select
-                                value={transcription.status || 'pending'}
-                                onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review')}
-                                disabled={updatingStatus === transcription._id}
-                                className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
-                                  transcription.status === 'completed'
-                                    ? 'bg-purple-100 text-purple-800'
-                                    : transcription.status === 'done'
-                                    ? 'bg-green-100 text-green-800'
-                                    : transcription.status === 'flagged'
-                                      ? ((transcription as any).has_been_reprocessed ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800')
-                                      : 'bg-yellow-100 text-yellow-800'
-                                } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
-                              >
-                                <option value="pending">Pending</option>
-                                <option value="done">Done</option>
-                                <option value="completed">Completed</option>
-                                <option value="flagged">
-                                  {(transcription as any).has_been_reprocessed ? 'Flagged (Reprocessed)' : 'Flagged'}
-                                </option>
-                              </select>
+                              <div className="flex flex-col gap-1">
+                                <select
+                                  value={transcription.status || 'pending'}
+                                  onChange={(e) => handleStatusChange(transcription._id, e.target.value as 'done' | 'pending' | 'flagged' | 'completed' | 'assigned_for_review' | 'validating' | 'passed')}
+                                  disabled={updatingStatus === transcription._id}
+                                  className={`px-2.5 py-0.5 rounded-full text-xs font-medium border-0 cursor-pointer focus:ring-2 focus:ring-blue-500 ${
+                                    transcription.status === 'passed'
+                                      ? 'bg-lime-100 text-lime-800'
+                                      : transcription.status === 'completed'
+                                      ? 'bg-purple-100 text-purple-800'
+                                      : transcription.status === 'done'
+                                      ? 'bg-green-100 text-green-800'
+                                      : transcription.status === 'flagged'
+                                        ? ((transcription as any).has_been_reprocessed ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800')
+                                        : 'bg-yellow-100 text-yellow-800'
+                                  } ${updatingStatus === transcription._id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                  <option value="pending">Pending</option>
+                                  <option value="done">Done</option>
+                                  <option value="completed">Completed</option>
+                                  <option value="flagged">
+                                    {(transcription as any).has_been_reprocessed ? 'Flagged (Reprocessed)' : 'Flagged'}
+                                  </option>
+                                  <option value="validating">Validating</option>
+                                  <option value="passed">Passed</option>
+                                </select>
+                              </div>
                               {updatingStatus === transcription._id && (
                                 <Loader2 className="inline-block h-3 w-3 ml-2 animate-spin text-gray-500" />
                               )}
